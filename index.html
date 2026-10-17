@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+  <title>旅遊記帳 Travel Ledger</title>
+  <meta name="description" content="家人出國旅遊即時同步記帳 PWA" />
+  <meta name="theme-color" content="#18181b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="旅遊記帳" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <style type="text/tailwindcss">
+    @layer utilities {
+      .scrollbar-hide::-webkit-scrollbar { display: none; }
+      .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+    }
+    body {
+      @apply bg-zinc-50 text-zinc-900 transition-colors duration-200 dark:bg-zinc-950 dark:text-zinc-100;
+    }
+    .safe-header { padding-top: env(safe-area-inset-top, 0px); }
+    .safe-bottom-fab {
+      bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+    }
+    @media (min-width: 768px) {
+      .safe-bottom-fab { bottom: calc(2rem + env(safe-area-inset-bottom, 0px)); }
+    }
+    .pie-chart {
+      width: 112px; height: 112px; border-radius: 50%;
+      background: conic-gradient(var(--pie-gradient));
+      position: relative;
+    }
+    .pie-chart::after {
+      content: ''; position: absolute; inset: 22px;
+      background: white; border-radius: 50%;
+    }
+    .dark .pie-chart::after { background: #18181b; }
+  </style>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+    // ========== 請替換成你的 Supabase 專案 ==========
+    const SUPABASE_URL = 'https://wanknivxcsrasdkkxmfr.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndhbmtuaXZ4Y3NyYXNka2t4bWZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMzE4NjcsImV4cCI6MjEwMjkwNzg2N30.tqsFimERtYCxoh8J-8FlqxByWtX2gNnyaGo08jditrs';
+    // 全家人共用同一個固定帳本（不必輸入代碼，打開即同步）
+    // 若要換下一趟旅行，可改這個常數或在設定清除本機後重開
+    const FIXED_LEDGER_CODE = 'FAMILY';
+    // ================================================
+
+    const sb = (window.supabase && window.supabase.createClient)
+      ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+      : null;
+
+    const CATEGORIES = ['餐飲', '交通', '購物', '住宿', '門票', '其他'];
+    const CURRENCIES = [
+      { key: 'TWD', label: '台幣', symbol: 'NT$' },
+      { key: 'HKD', label: '港幣', symbol: 'HK$' },
+      { key: 'JPY', label: '日圓', symbol: '¥' },
+      { key: 'KRW', label: '韓元', symbol: '₩' },
+      { key: 'USD', label: '美元', symbol: '$' },
+      { key: 'EUR', label: '歐元', symbol: '€' },
+      { key: 'CNY', label: '人民幣', symbol: '¥' },
+      { key: 'THB', label: '泰銖', symbol: '฿' },
+    ];
+
+    const PIE_COLORS = ['#ef4444','#f97316','#eab308','#22c55e','#14b8a6','#3b82f6','#8b5cf6','#ec4899','#64748b','#0ea5e9'];
+
+    // ---------- helpers ----------
+    const generateId = () => crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
+    const formatMoney = (n, symbol = 'NT$') => {
+      const str = new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n || 0);
+      return `${symbol} ${str}`;
+    };
+    const today = () => new Date().toISOString().slice(0, 10);
+    const nowISO = () => new Date().toISOString();
+
+    function useLocalStorage(key, initial) {
+      const [val, setVal] = useState(() => {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : initial;
+        } catch { return initial; }
+      });
+      // 必須用 React 的 prev，避免連續 set 時讀到舊的 null 把狀態清掉（造成歡迎頁無限迴圈）
+      const set = (v) => {
+        setVal(prev => {
+          const next = typeof v === 'function' ? v(prev) : v;
+          try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+          return next;
+        });
+      };
+      return [val, set];
+    }
+
+    // ---------- Icons (same style as Kumamon) ----------
+    const Icons = {
+      Plus: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
+      Trash: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>,
+      Edit: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
+      Sun: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>,
+      Moon: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>,
+      Settings: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+      Users: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+      Chart: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>,
+      Cloud: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>,
+      Offline: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>,
+      Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>,
+      Refresh: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>,
+    };
+
+    // ---------- UI primitives ----------
+    const Modal = ({ children, onClose }) => (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+           onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-xl w-full max-w-md overflow-hidden border border-zinc-200 dark:border-zinc-800 max-h-[90vh] overflow-y-auto">
+          {children}
+        </div>
+      </div>
+    );
+
+    const Toast = ({ message, type = 'success', onClose }) => {
+      useEffect(() => {
+        const t = setTimeout(onClose, 2600);
+        return () => clearTimeout(t);
+      }, [onClose]);
+      const bg = type === 'error' ? 'bg-red-500 text-white' : 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900';
+      return (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[60]">
+          <div className={`${bg} px-5 py-2.5 rounded-full shadow-lg text-sm font-medium`}>{message}</div>
+        </div>
+      );
+    };
+
+    // ---------- Forms ----------
+    const TxForm = ({ initial, members, travelCurrency, onSave, onClose }) => {
+      const [form, setForm] = useState(initial || {
+        amount: '', currency: travelCurrency || 'JPY', category: '餐飲',
+        payer: members[0] || '', note: '', date: today()
+      });
+      const amountRef = useRef(null);
+
+      useEffect(() => { amountRef.current?.focus(); }, []);
+
+      const submit = (e) => {
+        e.preventDefault();
+        const amt = parseFloat(String(form.amount).replace(/,/g, ''));
+        if (!amt || amt <= 0) { alert('請輸入有效金額'); return; }
+        if (!form.payer.trim()) { alert('請填寫付款人'); return; }
+        onSave({
+          ...form,
+          id: initial?.id || generateId(),
+          amount: Math.round(amt * 100) / 100,
+          category: form.category || '其他',
+          payer: form.payer.trim(),
+          note: (form.note || '').trim(),
+          date: form.date || today(),
+          created_at: initial?.created_at || nowISO(),
+          updated_at: nowISO(),
+          _pending: !navigator.onLine
+        });
+      };
+
+      return (
+        <Modal onClose={onClose}>
+          <form onSubmit={submit} className="p-6">
+            <h2 className="text-xl font-bold mb-5">{initial ? '編輯支出' : '新增支出'}</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">金額</label>
+                <div className="flex gap-2">
+                  <select value={form.currency} onChange={e => setForm({...form, currency: e.target.value})}
+                    className="w-24 px-2 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 text-sm">
+                    {CURRENCIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                  </select>
+                  <input ref={amountRef} type="text" inputMode="decimal" required placeholder="0"
+                    value={form.amount} onChange={e => setForm({...form, amount: e.target.value})}
+                    className="flex-1 px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 font-mono focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-white" />
+                </div>
+                <p className="text-[11px] text-zinc-400 mt-1">預設為旅遊貨幣，可臨時改成其他幣別</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">類別</label>
+                <div className="flex flex-wrap gap-2">
+                  {CATEGORIES.map(c => (
+                    <button key={c} type="button" onClick={() => setForm({...form, category: c})}
+                      className={`text-xs px-2.5 py-1 rounded-full transition-colors ${form.category === c ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'}`}>
+                      {c}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">付款人</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {members.map(m => (
+                    <button key={m} type="button" onClick={() => setForm({...form, payer: m})}
+                      className={`text-xs px-2.5 py-1 rounded-full ${form.payer === m ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'}`}>
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <input type="text" placeholder="或自行輸入名字" value={form.payer}
+                  onChange={e => setForm({...form, payer: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-white" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">日期</label>
+                <input type="date" required value={form.date} onChange={e => setForm({...form, date: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">備註（選填）</label>
+                <input type="text" placeholder="例如：午餐、地鐵票…" value={form.note}
+                  onChange={e => setForm({...form, note: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-8">
+              <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg">取消</button>
+              <button type="submit" className="px-5 py-2 text-sm font-medium text-white bg-zinc-900 dark:bg-white dark:text-zinc-900 rounded-lg shadow-sm">儲存</button>
+            </div>
+          </form>
+        </Modal>
+      );
+    };
+
+    // 首次開啟：暱稱 + 旅遊貨幣（本機，不同步）
+    const WelcomeModal = ({ onStart }) => {
+      const [name, setName] = useState('');
+      const [tripName, setTripName] = useState('家人旅遊');
+      const [travelCur, setTravelCur] = useState('JPY');
+      const [homeCur, setHomeCur] = useState('TWD');
+
+      return (
+        <Modal onClose={() => {}}>
+          <div className="p-6">
+            <h2 className="text-xl font-bold mb-1">開始記帳</h2>
+            <p className="text-sm text-zinc-500 mb-5">全家人共用同一個帳本，打開就能即時同步，不必輸入代碼。</p>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">你的暱稱（顯示在付款人）</label>
+                <input type="text" placeholder="例如：爸爸、小美" value={name}
+                  onChange={e => setName(e.target.value)}
+                  className="w-full px-3 py-2.5 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800"
+                  autoFocus />
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">行程名稱（可之後改）</label>
+                <input type="text" placeholder="例如：日本東京 2026" value={tripName}
+                  onChange={e => setTripName(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">旅遊貨幣（本機 · 入帳預設）</label>
+                <select value={travelCur} onChange={e => setTravelCur(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800">
+                  {CURRENCIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                </select>
+                <p className="text-[11px] text-zinc-400 mt-1">只存在你的手機，方便用當地幣記帳，不會同步給其他人</p>
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">本國貨幣（共用 · 結算用）</label>
+                <select value={homeCur} onChange={e => setHomeCur(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800">
+                  {CURRENCIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                </select>
+                <p className="text-[11px] text-zinc-400 mt-1">若雲端已有設定，會以雲端為準並同步給全家人</p>
+              </div>
+              <button type="button" disabled={!name.trim()}
+                onClick={() => onStart(name.trim(), (tripName || '家人旅遊').trim(), travelCur, homeCur)}
+                className="w-full py-2.5 text-sm font-medium bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg disabled:opacity-40">
+                進入共用帳本
+              </button>
+            </div>
+          </div>
+        </Modal>
+      );
+    };
+
+    const SettingsModal = ({ settings, members, onSave, onClose, onLeave }) => {
+      const [local, setLocal] = useState({ ...settings });
+      const [memberInput, setMemberInput] = useState('');
+      const [localMembers, setLocalMembers] = useState([...members]);
+
+      const addMember = () => {
+        const n = memberInput.trim();
+        if (!n || localMembers.includes(n)) return;
+        setLocalMembers([...localMembers, n]);
+        setMemberInput('');
+      };
+
+      return (
+        <Modal onClose={onClose}>
+          <div className="p-6">
+            <h2 className="text-xl font-bold mb-5">設定</h2>
+            <div className="space-y-5">
+              <div>
+                <label className="block text-sm font-medium mb-1">行程名稱</label>
+                <input value={local.tripName || ''} onChange={e => setLocal({...local, tripName: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">旅遊貨幣（本機 · 入帳預設）</label>
+                <select value={local.travelCurrency || 'JPY'} onChange={e => setLocal({...local, travelCurrency: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800">
+                  {CURRENCIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                </select>
+                <p className="text-xs text-zinc-500 mt-1">只存在本機，新增支出時預設用此幣別</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">本國貨幣（共用 · 結算用）</label>
+                <select value={local.homeCurrency || 'TWD'} onChange={e => setLocal({...local, homeCurrency: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800">
+                  {CURRENCIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                </select>
+                <p className="text-xs text-zinc-500 mt-1">與匯率一併同步給全家人</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">匯率（1 單位外幣 = ? 本國貨幣）</label>
+                <p className="text-xs text-zinc-500 mb-2">儲存後會同步給全家人，大家換算／結算數字一致</p>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {CURRENCIES.filter(c => c.key !== (local.homeCurrency || 'TWD')).map(c => (
+                    <div key={c.key} className="flex items-center gap-2">
+                      <span className="w-16 text-sm text-zinc-500 shrink-0">{c.label}</span>
+                      <input type="number" step="any" min="0"
+                        value={(local.rates || {})[c.key] ?? 1}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value);
+                          setLocal({
+                            ...local,
+                            rates: { ...(local.rates || {}), [c.key]: isNaN(v) || v <= 0 ? 1 : v }
+                          });
+                        }}
+                        className="flex-1 px-2 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-2">成員</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {localMembers.map(m => (
+                    <span key={m} className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800">
+                      {m}
+                      <button type="button" onClick={() => setLocalMembers(localMembers.filter(x => x !== m))} className="text-zinc-400 hover:text-red-500">×</button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input value={memberInput} onChange={e => setMemberInput(e.target.value)} placeholder="新增成員"
+                    className="flex-1 px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800"
+                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addMember())} />
+                  <button type="button" onClick={addMember} className="px-3 py-1.5 text-sm bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg">新增</button>
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-between items-center mt-8">
+              <button type="button" onClick={onLeave} className="text-sm text-red-600 dark:text-red-400">重設本機（換暱稱）</button>
+              <div className="flex gap-3">
+                <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-zinc-600">取消</button>
+                <button type="button" onClick={() => onSave(local, localMembers)} className="px-5 py-2 text-sm font-medium bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg">儲存</button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      );
+    };
+
+    // ---------- Mini pie ----------
+    const MiniPie = ({ dataMap, title }) => {
+      const data = useMemo(() => {
+        const entries = Object.entries(dataMap || {}).filter(([, v]) => v > 0);
+        const total = entries.reduce((s, [, v]) => s + v, 0);
+        if (total === 0) return null;
+        const sorted = entries.map(([name, value]) => ({ name, value, percent: (value / total) * 100 }))
+          .sort((a, b) => b.value - a.value);
+        let acc = 0;
+        const gradient = sorted.map((item, i) => {
+          const start = acc;
+          acc += item.percent;
+          return `${PIE_COLORS[i % PIE_COLORS.length]} ${start}% ${acc}%`;
+        }).join(', ');
+        return { sorted, total, gradient };
+      }, [dataMap]);
+
+      if (!data) return (
+        <div className="py-8 text-center text-zinc-400 text-xs">{title}<br/>無資料</div>
+      );
+      return (
+        <div className="flex flex-col items-center gap-3">
+          <h4 className="text-xs font-semibold text-zinc-500">{title}</h4>
+          <div className="pie-chart" style={{ '--pie-gradient': data.gradient }} />
+          <div className="w-full space-y-1.5">
+            {data.sorted.slice(0, 6).map((item, i) => (
+              <div key={item.name} className="flex items-center gap-2 text-xs">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                <span className="flex-1 truncate text-zinc-600 dark:text-zinc-400">{item.name}</span>
+                <span className="font-mono text-zinc-800 dark:text-zinc-200">{item.percent.toFixed(0)}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    };
+
+    // ---------- Main App ----------
+    function App() {
+      const [theme, setTheme] = useLocalStorage('tl-theme', 'system');
+      const [ledger, setLedger] = useLocalStorage('tl-ledger', null); // { code, tripName, travelCurrency(local), homeCurrency(shared), rates(shared), myName }
+      const [members, setMembers] = useLocalStorage('tl-members', []);
+      const [txs, setTxs] = useLocalStorage('tl-txs', []);
+      const [pendingQueue, setPendingQueue] = useLocalStorage('tl-pending', []); // offline writes
+      const [online, setOnline] = useState(navigator.onLine);
+      const [syncing, setSyncing] = useState(false);
+      const [statusText, setStatusText] = useState('');
+      const [tab, setTab] = useState('list'); // list | stats | settle
+      const [isFormOpen, setIsFormOpen] = useState(false);
+      const [editingTx, setEditingTx] = useState(null);
+      const [isWelcomeOpen, setIsWelcomeOpen] = useState(!ledger?.myName);
+      const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+      const [toast, setToast] = useState(null);
+      const [filterCat, setFilterCat] = useState('all');
+
+      // 確保本機 ledger 永遠綁定固定共用代碼（舊版若有隨機代碼會自動校正）
+      useEffect(() => {
+        if (ledger && ledger.code !== FIXED_LEDGER_CODE) {
+          setLedger({ ...ledger, code: FIXED_LEDGER_CODE });
+        }
+      }, []);
+
+      const showToast = (message, type = 'success') => setToast({ message, type });
+
+      // theme
+      useEffect(() => {
+        const root = document.documentElement;
+        const preferDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const dark = theme === 'dark' || (theme === 'system' && preferDark);
+        root.classList.toggle('dark', dark);
+      }, [theme]);
+
+      // online status
+      useEffect(() => {
+        const on = () => setOnline(true);
+        const off = () => setOnline(false);
+        window.addEventListener('online', on);
+        window.addEventListener('offline', off);
+        return () => { window.removeEventListener('online', on); window.removeEventListener('offline', off); };
+      }, []);
+
+      const convert = useCallback((amount, fromCur) => {
+        if (!ledger) return amount;
+        const home = ledger.homeCurrency || 'TWD';
+        if (fromCur === home) return amount;
+        const rate = (ledger.rates || {})[fromCur] ?? 1;
+        return amount * rate;
+      }, [ledger]);
+
+      const homeSymbol = useMemo(() => {
+        const c = CURRENCIES.find(x => x.key === (ledger?.homeCurrency || 'TWD'));
+        return c?.symbol || 'NT$';
+      }, [ledger]);
+
+      // ---------- Supabase sync ----------
+      // 同步帳本設定：行程名、本國貨幣、匯率（共用）
+      // 不覆寫：myName、travelCurrency（本機入帳預設）
+      const applyLedgerRow = useCallback((row) => {
+        if (!row) return;
+        setLedger(prev => {
+          // 若本機尚無 ledger，不要用雲端資料硬建（避免歡迎流程被蓋掉）
+          if (!prev || !prev.myName) return prev;
+          const nextRates = (row.rates && typeof row.rates === 'object') ? row.rates : (prev.rates || {});
+          return {
+            ...prev,
+            tripName: row.name || prev.tripName,
+            homeCurrency: row.home_currency || prev.homeCurrency || 'TWD',
+            rates: nextRates,
+            code: FIXED_LEDGER_CODE
+            // travelCurrency、myName 保持本機
+          };
+        });
+      }, [setLedger]);
+
+      const pullLedgerSettings = useCallback(async (code) => {
+        if (!sb || !code) return;
+        try {
+          const { data, error } = await sb.from('ledgers').select('*').eq('code', code).maybeSingle();
+          if (error) throw error;
+          if (data) applyLedgerRow(data);
+        } catch (e) {
+          console.warn('pull ledger settings', e);
+        }
+      }, [applyLedgerRow]);
+
+      const pushLedgerSettings = useCallback(async (settings) => {
+        if (!sb || !settings) return false;
+        try {
+          const { error } = await sb.from('ledgers').upsert({
+            code: FIXED_LEDGER_CODE,
+            name: settings.tripName || '家人旅遊',
+            home_currency: settings.homeCurrency || 'TWD',
+            rates: settings.rates || {},
+            updated_at: nowISO()
+          });
+          if (error) throw error;
+          return true;
+        } catch (e) {
+          console.warn('push ledger settings', e);
+          return false;
+        }
+      }, []);
+
+      const pullFromCloud = useCallback(async (code) => {
+        if (!sb || !code) return;
+        setSyncing(true);
+        try {
+          await pullLedgerSettings(code);
+          const { data, error } = await sb
+            .from('transactions')
+            .select('*')
+            .eq('ledger_code', code)
+            .order('date', { ascending: false });
+          if (error) throw error;
+          if (Array.isArray(data)) {
+            setTxs(data.map(r => ({
+              id: r.id,
+              amount: Number(r.amount),
+              currency: r.currency,
+              category: r.category,
+              payer: r.payer,
+              note: r.note || '',
+              date: r.date,
+              created_at: r.created_at,
+              updated_at: r.updated_at
+            })));
+            setStatusText('已同步 ' + data.length + ' 筆（含匯率）');
+          }
+        } catch (e) {
+          console.warn(e);
+          setStatusText('同步失敗（可離線使用）');
+        } finally {
+          setSyncing(false);
+        }
+      }, [setTxs, pullLedgerSettings]);
+
+      const flushPending = useCallback(async () => {
+        if (!sb || !ledger?.code || !online || pendingQueue.length === 0) return;
+        setSyncing(true);
+        const remaining = [];
+        for (const item of pendingQueue) {
+          try {
+            if (item.action === 'upsert') {
+              const { error } = await sb.from('transactions').upsert({
+                id: item.tx.id,
+                ledger_code: ledger.code,
+                amount: item.tx.amount,
+                currency: item.tx.currency,
+                category: item.tx.category,
+                payer: item.tx.payer,
+                note: item.tx.note || '',
+                date: item.tx.date,
+                created_at: item.tx.created_at,
+                updated_at: nowISO()
+              });
+              if (error) throw error;
+            } else if (item.action === 'delete') {
+              const { error } = await sb.from('transactions').delete().eq('id', item.id).eq('ledger_code', ledger.code);
+              if (error) throw error;
+            } else if (item.action === 'settings') {
+              const ok = await pushLedgerSettings(item.settings);
+              if (!ok) throw new Error('settings push failed');
+            }
+          } catch (e) {
+            remaining.push(item);
+          }
+        }
+        setPendingQueue(remaining);
+        if (remaining.length === 0) {
+          await pullFromCloud(ledger.code);
+          showToast('離線資料已上傳');
+        }
+        setSyncing(false);
+      }, [sb, ledger, online, pendingQueue, setPendingQueue, pullFromCloud, pushLedgerSettings]);
+
+      // Realtime：交易 + 帳本設定（匯率）同時訂閱
+      useEffect(() => {
+        if (!ledger?.code || !sb) return;
+        pullFromCloud(ledger.code);
+
+        const channel = sb.channel('sync-' + ledger.code)
+          .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: 'transactions',
+            filter: `ledger_code=eq.${ledger.code}`
+          }, () => {
+            pullFromCloud(ledger.code);
+          })
+          .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: 'ledgers',
+            filter: `code=eq.${ledger.code}`
+          }, (payload) => {
+            if (payload.new) applyLedgerRow(payload.new);
+            else pullLedgerSettings(ledger.code);
+          })
+          .subscribe();
+
+        return () => { sb.removeChannel(channel); };
+      }, [ledger?.code]);
+
+      // flush when back online
+      useEffect(() => {
+        if (online) flushPending();
+      }, [online]);
+
+      // ---------- ledger actions ----------
+      // 免代碼：所有人進入同一個 FIXED_LEDGER_CODE 帳本
+      const handleStart = async (myName, tripName, travelCurrency, homeCurrency) => {
+        const baseLedger = {
+          code: FIXED_LEDGER_CODE,
+          tripName: tripName || '家人旅遊',
+          travelCurrency: travelCurrency || 'JPY', // 本機，不同步
+          homeCurrency: homeCurrency || 'TWD',     // 共用
+          rates: {},
+          myName
+        };
+        // 先寫入本機並關閉歡迎頁，避免 await 期間被舊狀態打回歡迎頁
+        setLedger(baseLedger);
+        setMembers(prev => {
+          const list = Array.isArray(prev) ? prev : [];
+          return list.includes(myName) ? list : [...list, myName];
+        });
+        setIsWelcomeOpen(false);
+
+        // 背景同步雲端設定（失敗也不影響進入）
+        try {
+          if (sb) {
+            const { data } = await sb.from('ledgers').select('*').eq('code', FIXED_LEDGER_CODE).maybeSingle();
+            if (data) {
+              setLedger(prev => ({
+                ...(prev || baseLedger),
+                code: FIXED_LEDGER_CODE,
+                myName: (prev && prev.myName) || myName,
+                travelCurrency: (prev && prev.travelCurrency) || baseLedger.travelCurrency,
+                tripName: data.name || (prev && prev.tripName) || baseLedger.tripName,
+                homeCurrency: data.home_currency || (prev && prev.homeCurrency) || baseLedger.homeCurrency,
+                rates: (data.rates && typeof data.rates === 'object') ? data.rates : ((prev && prev.rates) || {})
+              }));
+            } else {
+              await pushLedgerSettings(baseLedger);
+            }
+            await pullFromCloud(FIXED_LEDGER_CODE);
+          }
+        } catch (e) {
+          console.warn('handleStart sync', e);
+        }
+        showToast('已進入共用帳本');
+      };
+
+      const handleSaveSettings = async (s, m) => {
+        // travelCurrency 只留本機；其餘可同步
+        const next = {
+          ...ledger,
+          ...s,
+          code: FIXED_LEDGER_CODE,
+          travelCurrency: s.travelCurrency || ledger.travelCurrency || 'JPY',
+          myName: ledger.myName
+        };
+        setLedger(next);
+        setMembers(m);
+        setIsSettingsOpen(false);
+        if (!online || !sb) {
+          setPendingQueue(prev => [
+            ...prev.filter(p => p.action !== 'settings'),
+            { action: 'settings', settings: next }
+          ]);
+          showToast(online ? '設定已儲存（待同步）' : '本機已存；有網後會同步本國貨幣與匯率');
+          return;
+        }
+        const ok = await pushLedgerSettings(next);
+        showToast(ok ? '本國貨幣與匯率已同步給家人' : '本機已存，雲端同步失敗', ok ? 'success' : 'error');
+      };
+
+      const handleLeave = () => {
+        if (!confirm('確定重設本機暱稱與快取？雲端共用資料仍會保留，其他人不受影響。')) return;
+        setLedger(null);
+        setTxs([]);
+        setMembers([]);
+        setPendingQueue([]);
+        setIsWelcomeOpen(true);
+      };
+
+      const saveTx = async (tx) => {
+        // optimistic local update
+        setTxs(prev => {
+          const exists = prev.find(t => t.id === tx.id);
+          if (exists) return prev.map(t => t.id === tx.id ? tx : t);
+          return [tx, ...prev];
+        });
+        // keep member list
+        if (tx.payer && !members.includes(tx.payer)) {
+          setMembers(prev => [...prev, tx.payer]);
+        }
+
+        if (!online || !sb || !ledger?.code) {
+          setPendingQueue(prev => [...prev.filter(p => !(p.action === 'upsert' && p.tx.id === tx.id)), { action: 'upsert', tx }]);
+          showToast(online ? '已儲存（待同步）' : '已離線暫存');
+        } else {
+          try {
+            const { error } = await sb.from('transactions').upsert({
+              id: tx.id,
+              ledger_code: ledger.code,
+              amount: tx.amount,
+              currency: tx.currency,
+              category: tx.category,
+              payer: tx.payer,
+              note: tx.note || '',
+              date: tx.date,
+              created_at: tx.created_at,
+              updated_at: nowISO()
+            });
+            if (error) throw error;
+            showToast('已儲存並同步');
+          } catch (e) {
+            setPendingQueue(prev => [...prev, { action: 'upsert', tx }]);
+            showToast('已暫存，稍後再同步', 'error');
+          }
+        }
+        setIsFormOpen(false);
+        setEditingTx(null);
+      };
+
+      const deleteTx = async (id) => {
+        if (!confirm('確定刪除此筆？')) return;
+        setTxs(prev => prev.filter(t => t.id !== id));
+        if (!online || !sb || !ledger?.code) {
+          setPendingQueue(prev => [...prev, { action: 'delete', id }]);
+        } else {
+          try {
+            await sb.from('transactions').delete().eq('id', id).eq('ledger_code', ledger.code);
+            showToast('已刪除');
+          } catch {
+            setPendingQueue(prev => [...prev, { action: 'delete', id }]);
+          }
+        }
+      };
+
+      // ---------- derived ----------
+      const filtered = useMemo(() => {
+        if (filterCat === 'all') return txs;
+        return txs.filter(t => t.category === filterCat);
+      }, [txs, filterCat]);
+
+      const totalHome = useMemo(() =>
+        txs.reduce((s, t) => s + convert(t.amount, t.currency), 0)
+      , [txs, convert]);
+
+      const byCategory = useMemo(() => {
+        const m = {};
+        txs.forEach(t => {
+          m[t.category] = (m[t.category] || 0) + convert(t.amount, t.currency);
+        });
+        return m;
+      }, [txs, convert]);
+
+      const byPayer = useMemo(() => {
+        const m = {};
+        txs.forEach(t => {
+          m[t.payer] = (m[t.payer] || 0) + convert(t.amount, t.currency);
+        });
+        return m;
+      }, [txs, convert]);
+
+      // simple settlement: each person should pay total/n, net = paid - should
+      const settlement = useMemo(() => {
+        const people = [...new Set([...members, ...Object.keys(byPayer)])];
+        if (people.length === 0) return [];
+        const total = totalHome;
+        const fair = total / people.length;
+        const nets = people.map(p => ({
+          name: p,
+          paid: byPayer[p] || 0,
+          fair,
+          net: (byPayer[p] || 0) - fair
+        })).sort((a, b) => a.net - b.net);
+
+        // generate transfers: debtors pay creditors
+        const debtors = nets.filter(n => n.net < -0.01).map(n => ({ ...n }));
+        const creditors = nets.filter(n => n.net > 0.01).map(n => ({ ...n }));
+        const transfers = [];
+        let i = 0, j = 0;
+        while (i < debtors.length && j < creditors.length) {
+          const d = debtors[i];
+          const c = creditors[j];
+          const amount = Math.min(-d.net, c.net);
+          if (amount > 0.01) {
+            transfers.push({ from: d.name, to: c.name, amount });
+            d.net += amount;
+            c.net -= amount;
+          }
+          if (Math.abs(d.net) < 0.01) i++;
+          if (Math.abs(c.net) < 0.01) j++;
+        }
+        return { nets, transfers, fair, total };
+      }, [members, byPayer, totalHome]);
+
+      // ---------- render ----------
+      // 只有尚未設定暱稱時才顯示歡迎頁（避免同步過程把人打回去）
+      if (!ledger?.myName || isWelcomeOpen) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center p-6 safe-header">
+            <div className="text-5xl mb-4">✈️</div>
+            <h1 className="text-2xl font-bold mb-2">旅遊記帳</h1>
+            <p className="text-zinc-500 text-center text-sm mb-8 max-w-xs">
+              全家人打開同一個網址即可即時同步記帳，不必輸入代碼。支援離線暫存。
+            </p>
+            <WelcomeModal onStart={handleStart} />
+            {toast && <Toast {...toast} onClose={() => setToast(null)} />}
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen pb-28">
+          {/* Header */}
+          <header className="safe-header sticky top-0 z-30 bg-zinc-50/90 dark:bg-zinc-950/90 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
+            <div className="max-w-lg mx-auto px-4 py-3 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h1 className="font-bold text-lg truncate">{ledger.tripName || '旅遊帳本'}</h1>
+                <div className="flex items-center gap-2 text-xs text-zinc-500 mt-0.5">
+                  <span className="text-zinc-500">你好，{ledger.myName}</span>
+                  <span className="text-zinc-300 dark:text-zinc-600">·</span>
+                  {online ? (
+                    <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><Icons.Cloud /> 共用同步中</span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-amber-600"><Icons.Offline /> 離線</span>
+                  )}
+                  {pendingQueue.length > 0 && <span className="text-amber-600">· {pendingQueue.length} 筆待傳</span>}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => pullFromCloud(ledger.code)} disabled={syncing}
+                  className="p-2 text-zinc-500 hover:text-zinc-900 dark:hover:text-white" title="重新同步" aria-label="重新同步">
+                  <Icons.Refresh />
+                </button>
+                <button onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+                  className="p-2 text-zinc-500 hover:text-zinc-900 dark:hover:text-white" aria-label="切換主題">
+                  {theme === 'dark' ? <Icons.Sun /> : <Icons.Moon />}
+                </button>
+                <button onClick={() => setIsSettingsOpen(true)}
+                  className="p-2 text-zinc-500 hover:text-zinc-900 dark:hover:text-white" aria-label="設定">
+                  <Icons.Settings />
+                </button>
+              </div>
+            </div>
+            {/* tabs */}
+            <div className="max-w-lg mx-auto px-4 flex gap-1 pb-2">
+              {[
+                { key: 'list', label: '明細' },
+                { key: 'stats', label: '統計' },
+                { key: 'settle', label: '結算' },
+              ].map(t => (
+                <button key={t.key} onClick={() => setTab(t.key)}
+                  className={`flex-1 py-1.5 text-sm font-medium rounded-lg transition-colors ${tab === t.key ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </header>
+
+          <main className="max-w-lg mx-auto px-4 pt-4">
+            {/* summary card */}
+            <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 mb-4 shadow-sm">
+              <div className="text-xs text-zinc-500 mb-1">本趟總花費（已換算）</div>
+              <div className="text-2xl font-bold font-mono tracking-tight">{formatMoney(totalHome, homeSymbol)}</div>
+              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {members.length || Object.keys(byPayer).length} 人</div>
+            </div>
+
+            {tab === 'list' && (
+              <>
+                <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-2 mb-2">
+                  <button onClick={() => setFilterCat('all')}
+                    className={`shrink-0 text-xs px-3 py-1 rounded-full ${filterCat === 'all' ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600'}`}>全部</button>
+                  {CATEGORIES.map(c => (
+                    <button key={c} onClick={() => setFilterCat(c)}
+                      className={`shrink-0 text-xs px-3 py-1 rounded-full ${filterCat === c ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600'}`}>{c}</button>
+                  ))}
+                </div>
+                {filtered.length === 0 ? (
+                  <div className="py-16 text-center text-zinc-400">
+                    <p className="text-sm">目前沒有紀錄</p>
+                    <p className="text-xs mt-1">點擊右下角按鈕新增第一筆</p>
+                  </div>
+                ) : (
+                  <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800 overflow-hidden">
+                    {filtered.map(tx => {
+                      const cur = CURRENCIES.find(c => c.key === tx.currency);
+                      return (
+                        <div key={tx.id} className="p-3.5 flex items-center justify-between gap-3 group">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 flex items-center justify-center text-lg shrink-0">−</div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold truncate">{tx.category}</span>
+                                <span className="text-xs text-zinc-400">{tx.date}</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">{tx.payer}</span>
+                              </div>
+                              {tx.note && <div className="text-sm text-zinc-500 truncate mt-0.5">{tx.note}</div>}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <div className="text-right">
+                              <div className="font-mono font-semibold text-sm">−{formatMoney(tx.amount, cur?.symbol || '')}</div>
+                              {tx.currency !== ledger.homeCurrency && (
+                                <div className="text-[10px] text-zinc-400">≈ {formatMoney(convert(tx.amount, tx.currency), homeSymbol)}</div>
+                              )}
+                            </div>
+                            <button onClick={() => { setEditingTx(tx); setIsFormOpen(true); }} className="p-1.5 text-zinc-400 hover:text-zinc-900 dark:hover:text-white opacity-0 group-hover:opacity-100" aria-label="編輯"><Icons.Edit /></button>
+                            <button onClick={() => deleteTx(tx.id)} className="p-1.5 text-zinc-400 hover:text-red-600 opacity-0 group-hover:opacity-100" aria-label="刪除"><Icons.Trash /></button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+
+            {tab === 'stats' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
+                  <MiniPie dataMap={byCategory} title="依類別" />
+                </div>
+                <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
+                  <MiniPie dataMap={byPayer} title="依付款人" />
+                </div>
+              </div>
+            )}
+
+            {tab === 'settle' && (
+              <div className="space-y-4">
+                <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
+                  <h3 className="text-sm font-semibold mb-3">每人應分攤</h3>
+                  <p className="text-xs text-zinc-500 mb-3">總額 {formatMoney(settlement.total, homeSymbol)} ÷ {settlement.nets?.length || 0} 人 = {formatMoney(settlement.fair || 0, homeSymbol)}</p>
+                  <div className="space-y-2">
+                    {(settlement.nets || []).map(n => (
+                      <div key={n.name} className="flex items-center justify-between text-sm">
+                        <span className="font-medium">{n.name}</span>
+                        <div className="text-right">
+                          <div className="font-mono">已付 {formatMoney(n.paid, homeSymbol)}</div>
+                          <div className={`text-xs ${n.net >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                            {n.net >= 0 ? '應收 ' : '應付 '}{formatMoney(Math.abs(n.net), homeSymbol)}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
+                  <h3 className="text-sm font-semibold mb-3">建議轉帳</h3>
+                  {(settlement.transfers || []).length === 0 ? (
+                    <p className="text-sm text-zinc-400">目前帳目已平衡 🎉</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {settlement.transfers.map((t, i) => (
+                        <div key={i} className="flex items-center gap-2 text-sm p-2.5 rounded-xl bg-zinc-50 dark:bg-zinc-800/60">
+                          <span className="font-medium">{t.from}</span>
+                          <span className="text-zinc-400">→</span>
+                          <span className="font-medium">{t.to}</span>
+                          <span className="ml-auto font-mono font-semibold">{formatMoney(t.amount, homeSymbol)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <p className="text-center text-xs text-zinc-400 pt-6 pb-2">
+              資料存於本機 + Supabase · {statusText || (online ? '就緒' : '離線模式')}
+            </p>
+          </main>
+
+          {/* FAB */}
+          <button onClick={() => { setEditingTx(null); setIsFormOpen(true); }}
+            className="safe-bottom-fab fixed right-6 md:right-8 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 p-4 rounded-full shadow-lg hover:scale-105 active:scale-95 transition-transform z-40"
+            title="新增支出" aria-label="新增支出">
+            <Icons.Plus />
+          </button>
+
+          {isFormOpen && (
+            <TxForm initial={editingTx} members={members.length ? members : [ledger.myName]}
+              travelCurrency={ledger.travelCurrency || 'JPY'}
+              onSave={saveTx} onClose={() => { setIsFormOpen(false); setEditingTx(null); }} />
+          )}
+          {isSettingsOpen && (
+            <SettingsModal settings={ledger} members={members}
+              onSave={handleSaveSettings}
+              onClose={() => setIsSettingsOpen(false)}
+              onLeave={handleLeave} />
+          )}
+          {toast && <Toast {...toast} onClose={() => setToast(null)} />}
+        </div>
+      );
+    }
+
+    // PWA SW registration
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js', { scope: './' })
+          .then(reg => console.info('[Travel Ledger] SW registered', reg.scope))
+          .catch(err => console.warn('[Travel Ledger] SW failed', err));
+      });
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
