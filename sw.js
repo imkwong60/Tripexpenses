@@ -1,5 +1,5 @@
 /* Travel Ledger Service Worker – basic offline cache */
-const CACHE = 'travel-ledger-v1';
+const CACHE = 'travel-ledger-v2';
 const ASSETS = [
   './',
   './index.html',
