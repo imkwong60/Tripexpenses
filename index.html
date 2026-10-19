@@ -98,14 +98,7 @@
       const str = new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n || 0);
       return `${symbol} ${str}`;
     };
-    // 使用本地時區日期，避免 toISOString()（UTC）在香港早上顯示成前一天
-    const today = () => {
-      const d = new Date();
-      const y = d.getFullYear();
-      const m = String(d.getMonth() + 1).padStart(2, '0');
-      const day = String(d.getDate()).padStart(2, '0');
-      return `${y}-${m}-${day}`;
-    };
+    const today = () => new Date().toISOString().slice(0, 10);
     const nowISO = () => new Date().toISOString();
     // 入帳時間顯示（本地時區）
     const formatEntryTime = (iso) => {
@@ -253,7 +246,7 @@
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">日期</label>
                 <input type="date" required value={form.date} onChange={e => setForm({...form, date: e.target.value})}
-                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                  className="w-full h-11 px-3 text-sm leading-none border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 appearance-none" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">備註（選填）</label>
@@ -608,25 +601,32 @@
       }, [applyLedgerRow]);
 
       // settings 可含 members（陣列）；有傳就寫入雲端
+      // 若資料庫尚未有 members 欄位，會自動退回只同步名稱／貨幣／匯率，避免整筆失敗
       const pushLedgerSettings = useCallback(async (settings, membersList) => {
         if (!sb || !settings) return false;
+        const base = {
+          code: FIXED_LEDGER_CODE,
+          name: settings.tripName || '家人旅遊',
+          home_currency: settings.homeCurrency || 'TWD',
+          rates: settings.rates || {},
+          updated_at: nowISO()
+        };
         try {
-          const payload = {
-            code: FIXED_LEDGER_CODE,
-            name: settings.tripName || '家人旅遊',
-            home_currency: settings.homeCurrency || 'TWD',
-            rates: settings.rates || {},
-            updated_at: nowISO()
-          };
-          if (Array.isArray(membersList)) {
-            payload.members = membersList;
-          }
+          const payload = Array.isArray(membersList) ? { ...base, members: membersList } : base;
           const { error } = await sb.from('ledgers').upsert(payload);
           if (error) throw error;
           return true;
-        } catch (e) {
-          console.warn('push ledger settings', e);
-          return false;
+        } catch (e1) {
+          // 可能是 members 欄位不存在 → 不含 members 再試一次
+          console.warn('push ledger settings (with members) failed, retry without', e1);
+          try {
+            const { error } = await sb.from('ledgers').upsert(base);
+            if (error) throw error;
+            return true;
+          } catch (e2) {
+            console.warn('push ledger settings failed', e2);
+            return false;
+          }
         }
       }, []);
 
@@ -1074,32 +1074,30 @@
                     {filtered.map(tx => {
                       const cur = CURRENCIES.find(c => c.key === tx.currency);
                       return (
-                        <div key={tx.id} className="p-3.5 flex items-center justify-between gap-3 group">
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-10 h-10 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 flex items-center justify-center text-lg shrink-0">−</div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="font-semibold truncate">{tx.category}</span>
-                                <span className="text-xs text-zinc-400">{tx.date}</span>
-                                {tx.created_at && (
-                                  <span className="text-[10px] text-zinc-400" title="入帳時間">
-                                    {formatEntryTime(tx.created_at)}
-                                  </span>
-                                )}
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">{tx.payer}</span>
-                              </div>
-                              {tx.note && <div className="text-sm text-zinc-500 truncate mt-0.5">{tx.note}</div>}
+                        <div key={tx.id} className="px-3.5 py-3 flex items-center gap-3 group">
+                          <div className="w-9 h-9 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 flex items-center justify-center text-base shrink-0">−</div>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="font-semibold text-sm truncate">{tx.category}</span>
+                              {tx.note && <span className="text-xs text-zinc-400 truncate">· {tx.note}</span>}
+                            </div>
+                            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-zinc-400 min-w-0">
+                              <span className="shrink-0">{tx.date}</span>
+                              {tx.created_at && (
+                                <span className="shrink-0" title="入帳時間">{formatEntryTime(tx.created_at)}</span>
+                              )}
+                              <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 truncate max-w-[6rem]">{tx.payer}</span>
                             </div>
                           </div>
-                          <div className="flex items-center gap-1 shrink-0">
-                            <div className="text-right">
-                              <div className="font-mono font-semibold text-sm">−{formatMoney(tx.amount, cur?.symbol || '')}</div>
-                              {tx.currency !== ledger.homeCurrency && (
-                                <div className="text-[10px] text-zinc-400">≈ {formatMoney(convert(tx.amount, tx.currency), homeSymbol)}</div>
-                              )}
-                            </div>
-                            <button onClick={() => { setEditingTx(tx); setIsFormOpen(true); }} className="p-1.5 text-zinc-400 hover:text-zinc-900 dark:hover:text-white opacity-0 group-hover:opacity-100" aria-label="編輯"><Icons.Edit /></button>
-                            <button onClick={() => deleteTx(tx.id)} className="p-1.5 text-zinc-400 hover:text-red-600 opacity-0 group-hover:opacity-100" aria-label="刪除"><Icons.Trash /></button>
+                          <div className="text-right shrink-0">
+                            <div className="font-mono font-semibold text-sm whitespace-nowrap">−{formatMoney(tx.amount, cur?.symbol || '')}</div>
+                            {tx.currency !== ledger.homeCurrency && (
+                              <div className="text-[10px] text-zinc-400 whitespace-nowrap">≈ {formatMoney(convert(tx.amount, tx.currency), homeSymbol)}</div>
+                            )}
+                          </div>
+                          <div className="flex flex-col shrink-0 opacity-60 group-hover:opacity-100">
+                            <button onClick={() => { setEditingTx(tx); setIsFormOpen(true); }} className="p-1 text-zinc-400 hover:text-zinc-900 dark:hover:text-white" aria-label="編輯"><Icons.Edit /></button>
+                            <button onClick={() => deleteTx(tx.id)} className="p-1 text-zinc-400 hover:text-red-600" aria-label="刪除"><Icons.Trash /></button>
                           </div>
                         </div>
                       );
