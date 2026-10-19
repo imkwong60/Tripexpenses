@@ -98,8 +98,28 @@
       const str = new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n || 0);
       return `${symbol} ${str}`;
     };
-    const today = () => new Date().toISOString().slice(0, 10);
+    // 使用本地時區日期，避免 toISOString()（UTC）在香港早上顯示成前一天
+    const today = () => {
+      const d = new Date();
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    };
     const nowISO = () => new Date().toISOString();
+    // 入帳時間顯示（本地時區）
+    const formatEntryTime = (iso) => {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleString('zh-TW', {
+          month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit',
+          hour12: false
+        });
+      } catch { return ''; }
+    };
 
     function useLocalStorage(key, initial) {
       const [val, setVal] = useState(() => {
@@ -344,23 +364,47 @@
               </div>
               <div>
                 <label className="block text-sm font-medium mb-2">匯率（1 單位外幣 = ? 本國貨幣）</label>
-                <p className="text-xs text-zinc-500 mb-2">儲存後會同步給全家人，大家換算／結算數字一致</p>
+                <p className="text-xs text-zinc-500 mb-2">儲存後會同步給全家人，大家換算／結算數字一致。可設為 1 或任意正數。</p>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {CURRENCIES.filter(c => c.key !== (local.homeCurrency || 'TWD')).map(c => (
-                    <div key={c.key} className="flex items-center gap-2">
-                      <span className="w-16 text-sm text-zinc-500 shrink-0">{c.label}</span>
-                      <input type="number" step="any" min="0"
-                        value={(local.rates || {})[c.key] ?? 1}
-                        onChange={e => {
-                          const v = parseFloat(e.target.value);
-                          setLocal({
-                            ...local,
-                            rates: { ...(local.rates || {}), [c.key]: isNaN(v) || v <= 0 ? 1 : v }
-                          });
-                        }}
-                        className="flex-1 px-2 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
-                    </div>
-                  ))}
+                  {CURRENCIES.filter(c => c.key !== (local.homeCurrency || 'TWD')).map(c => {
+                    const rateVal = (local.rates || {})[c.key];
+                    // 顯示時：數字直接顯示；空白字串保留以便編輯；undefined 顯示空（不強制 1）
+                    const display = rateVal === undefined || rateVal === null ? '' : rateVal;
+                    return (
+                      <div key={c.key} className="flex items-center gap-2">
+                        <span className="w-16 text-sm text-zinc-500 shrink-0">{c.label}</span>
+                        <input type="number" step="any" min="0" inputMode="decimal"
+                          value={display}
+                          onChange={e => {
+                            const raw = e.target.value;
+                            // 允許暫時空白或小數點，方便編輯；不強制改成 1
+                            if (raw === '' || raw === '.' || raw === '-') {
+                              setLocal({
+                                ...local,
+                                rates: { ...(local.rates || {}), [c.key]: raw }
+                              });
+                              return;
+                            }
+                            const v = parseFloat(raw);
+                            setLocal({
+                              ...local,
+                              rates: { ...(local.rates || {}), [c.key]: isNaN(v) ? raw : v }
+                            });
+                          }}
+                          onBlur={e => {
+                            // 失焦時才正規化：空或 ≤0 改為 1
+                            const raw = e.target.value;
+                            const v = parseFloat(raw);
+                            const final = (raw === '' || isNaN(v) || v <= 0) ? 1 : v;
+                            setLocal({
+                              ...local,
+                              rates: { ...(local.rates || {}), [c.key]: final }
+                            });
+                          }}
+                          className="flex-1 px-2 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
               <div>
@@ -447,6 +491,34 @@
       const [isSettingsOpen, setIsSettingsOpen] = useState(false);
       const [toast, setToast] = useState(null);
       const [filterCat, setFilterCat] = useState('all');
+      const TAB_ORDER = ['list', 'stats', 'settle'];
+      const touchStartRef = useRef(null);
+
+      // 手指左右滑切換分頁（明細 ↔ 統計 ↔ 結算）
+      const onTouchStart = (e) => {
+        if (isFormOpen || isSettingsOpen) return;
+        const t = e.changedTouches?.[0] || e.touches?.[0];
+        if (!t) return;
+        touchStartRef.current = { x: t.clientX, y: t.clientY, t: Date.now() };
+      };
+      const onTouchEnd = (e) => {
+        const start = touchStartRef.current;
+        touchStartRef.current = null;
+        if (!start || isFormOpen || isSettingsOpen) return;
+        const t = e.changedTouches?.[0];
+        if (!t) return;
+        const dx = t.clientX - start.x;
+        const dy = t.clientY - start.y;
+        // 水平滑動為主、距離夠大、時間不太長
+        if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+        if (Date.now() - start.t > 600) return;
+        const idx = TAB_ORDER.indexOf(tab);
+        if (dx < 0 && idx < TAB_ORDER.length - 1) {
+          setTab(TAB_ORDER[idx + 1]); // 左滑 → 下一頁
+        } else if (dx > 0 && idx > 0) {
+          setTab(TAB_ORDER[idx - 1]); // 右滑 → 上一頁
+        }
+      };
 
       // 確保本機 ledger 永遠綁定固定共用代碼（舊版若有隨機代碼會自動校正）
       useEffect(() => {
@@ -490,6 +562,19 @@
       // ---------- Supabase sync ----------
       // 同步帳本設定：行程名、本國貨幣、匯率（共用）
       // 不覆寫：myName、travelCurrency（本機入帳預設）
+      // 合併成員名單（去重，保持順序）
+      const mergeMembers = (a = [], b = []) => {
+        const seen = new Set();
+        const out = [];
+        for (const name of [...(Array.isArray(a) ? a : []), ...(Array.isArray(b) ? b : [])]) {
+          const n = (name || '').trim();
+          if (!n || seen.has(n)) continue;
+          seen.add(n);
+          out.push(n);
+        }
+        return out;
+      };
+
       const applyLedgerRow = useCallback((row) => {
         if (!row) return;
         setLedger(prev => {
@@ -505,7 +590,11 @@
             // travelCurrency、myName 保持本機
           };
         });
-      }, [setLedger]);
+        // 成員改為共用：與雲端合併（不會蓋掉本機剛新增的名字）
+        if (Array.isArray(row.members)) {
+          setMembers(prev => mergeMembers(row.members, prev));
+        }
+      }, [setLedger, setMembers]);
 
       const pullLedgerSettings = useCallback(async (code) => {
         if (!sb || !code) return;
@@ -518,16 +607,21 @@
         }
       }, [applyLedgerRow]);
 
-      const pushLedgerSettings = useCallback(async (settings) => {
+      // settings 可含 members（陣列）；有傳就寫入雲端
+      const pushLedgerSettings = useCallback(async (settings, membersList) => {
         if (!sb || !settings) return false;
         try {
-          const { error } = await sb.from('ledgers').upsert({
+          const payload = {
             code: FIXED_LEDGER_CODE,
             name: settings.tripName || '家人旅遊',
             home_currency: settings.homeCurrency || 'TWD',
             rates: settings.rates || {},
             updated_at: nowISO()
-          });
+          };
+          if (Array.isArray(membersList)) {
+            payload.members = membersList;
+          }
+          const { error } = await sb.from('ledgers').upsert(payload);
           if (error) throw error;
           return true;
         } catch (e) {
@@ -545,10 +639,11 @@
             .from('transactions')
             .select('*')
             .eq('ledger_code', code)
-            .order('date', { ascending: false });
+            .order('date', { ascending: false })
+            .order('created_at', { ascending: false });
           if (error) throw error;
           if (Array.isArray(data)) {
-            setTxs(data.map(r => ({
+            const mapped = data.map(r => ({
               id: r.id,
               amount: Number(r.amount),
               currency: r.currency,
@@ -558,7 +653,13 @@
               date: r.date,
               created_at: r.created_at,
               updated_at: r.updated_at
-            })));
+            }));
+            setTxs(mapped);
+            // 從交易付款人補齊成員名單（即使雲端尚無 members 欄位也能一致）
+            const payers = mapped.map(t => t.payer).filter(Boolean);
+            if (payers.length) {
+              setMembers(prev => mergeMembers(prev, payers));
+            }
             setStatusText('已同步 ' + data.length + ' 筆（含匯率）');
           }
         } catch (e) {
@@ -593,7 +694,7 @@
               const { error } = await sb.from('transactions').delete().eq('id', item.id).eq('ledger_code', ledger.code);
               if (error) throw error;
             } else if (item.action === 'settings') {
-              const ok = await pushLedgerSettings(item.settings);
+              const ok = await pushLedgerSettings(item.settings, item.members);
               if (!ok) throw new Error('settings push failed');
             }
           } catch (e) {
@@ -654,9 +755,11 @@
         };
         // 先寫入本機並關閉歡迎頁，避免 await 期間被舊狀態打回歡迎頁
         setLedger(baseLedger);
+        let startMembers = [myName];
         setMembers(prev => {
           const list = Array.isArray(prev) ? prev : [];
-          return list.includes(myName) ? list : [...list, myName];
+          startMembers = list.includes(myName) ? list : [...list, myName];
+          return startMembers;
         });
         setIsWelcomeOpen(false);
 
@@ -674,8 +777,20 @@
                 homeCurrency: data.home_currency || (prev && prev.homeCurrency) || baseLedger.homeCurrency,
                 rates: (data.rates && typeof data.rates === 'object') ? data.rates : ((prev && prev.rates) || {})
               }));
+              // 合併雲端成員 + 自己的暱稱
+              const cloudMembers = Array.isArray(data.members) ? data.members : [];
+              const merged = mergeMembers(cloudMembers, [myName]);
+              setMembers(merged);
+              // 若自己是新成員，推回雲端
+              if (!cloudMembers.includes(myName)) {
+                await pushLedgerSettings({
+                  tripName: data.name || baseLedger.tripName,
+                  homeCurrency: data.home_currency || baseLedger.homeCurrency,
+                  rates: (data.rates && typeof data.rates === 'object') ? data.rates : {}
+                }, merged);
+              }
             } else {
-              await pushLedgerSettings(baseLedger);
+              await pushLedgerSettings(baseLedger, startMembers);
             }
             await pullFromCloud(FIXED_LEDGER_CODE);
           }
@@ -686,27 +801,36 @@
       };
 
       const handleSaveSettings = async (s, m) => {
+        // 正規化匯率：空值、非數字、≤0 一律改為 1，確保可設為 1 且不會存入無效值
+        const rawRates = s.rates || {};
+        const cleanRates = {};
+        Object.keys(rawRates).forEach(k => {
+          const v = parseFloat(rawRates[k]);
+          cleanRates[k] = (isNaN(v) || v <= 0) ? 1 : v;
+        });
+        const cleanMembers = mergeMembers(m || [], []);
         // travelCurrency 只留本機；其餘可同步
         const next = {
           ...ledger,
           ...s,
+          rates: cleanRates,
           code: FIXED_LEDGER_CODE,
           travelCurrency: s.travelCurrency || ledger.travelCurrency || 'JPY',
           myName: ledger.myName
         };
         setLedger(next);
-        setMembers(m);
+        setMembers(cleanMembers);
         setIsSettingsOpen(false);
         if (!online || !sb) {
           setPendingQueue(prev => [
             ...prev.filter(p => p.action !== 'settings'),
-            { action: 'settings', settings: next }
+            { action: 'settings', settings: next, members: cleanMembers }
           ]);
-          showToast(online ? '設定已儲存（待同步）' : '本機已存；有網後會同步本國貨幣與匯率');
+          showToast(online ? '設定已儲存（待同步）' : '本機已存；有網後會同步本國貨幣、匯率與成員');
           return;
         }
-        const ok = await pushLedgerSettings(next);
-        showToast(ok ? '本國貨幣與匯率已同步給家人' : '本機已存，雲端同步失敗', ok ? 'success' : 'error');
+        const ok = await pushLedgerSettings(next, cleanMembers);
+        showToast(ok ? '本國貨幣、匯率與成員已同步給家人' : '本機已存，雲端同步失敗', ok ? 'success' : 'error');
       };
 
       const handleLeave = () => {
@@ -725,13 +849,25 @@
           if (exists) return prev.map(t => t.id === tx.id ? tx : t);
           return [tx, ...prev];
         });
-        // keep member list
+        // 新付款人加入成員名單並同步
+        let nextMembers = members;
         if (tx.payer && !members.includes(tx.payer)) {
-          setMembers(prev => [...prev, tx.payer]);
+          nextMembers = mergeMembers(members, [tx.payer]);
+          setMembers(nextMembers);
         }
 
         if (!online || !sb || !ledger?.code) {
-          setPendingQueue(prev => [...prev.filter(p => !(p.action === 'upsert' && p.tx.id === tx.id)), { action: 'upsert', tx }]);
+          setPendingQueue(prev => {
+            const q = [...prev.filter(p => !(p.action === 'upsert' && p.tx.id === tx.id)), { action: 'upsert', tx }];
+            // 若有新成員，一併排程同步成員
+            if (nextMembers !== members) {
+              return [
+                ...q.filter(p => p.action !== 'settings'),
+                { action: 'settings', settings: ledger, members: nextMembers }
+              ];
+            }
+            return q;
+          });
           showToast(online ? '已儲存（待同步）' : '已離線暫存');
         } else {
           try {
@@ -748,6 +884,10 @@
               updated_at: nowISO()
             });
             if (error) throw error;
+            // 新成員一併寫入雲端
+            if (nextMembers !== members) {
+              await pushLedgerSettings(ledger, nextMembers);
+            }
             showToast('已儲存並同步');
           } catch (e) {
             setPendingQueue(prev => [...prev, { action: 'upsert', tx }]);
@@ -774,9 +914,17 @@
       };
 
       // ---------- derived ----------
+      // 最新在前：先比交易日 (date) 降序，同日再比入帳時間 (created_at) 降序
       const filtered = useMemo(() => {
-        if (filterCat === 'all') return txs;
-        return txs.filter(t => t.category === filterCat);
+        const list = filterCat === 'all' ? [...txs] : txs.filter(t => t.category === filterCat);
+        return list.sort((a, b) => {
+          const da = a.date || '';
+          const db = b.date || '';
+          if (da !== db) return db.localeCompare(da);
+          const ca = a.created_at || a.updated_at || '';
+          const cb = b.created_at || b.updated_at || '';
+          return cb.localeCompare(ca);
+        });
       }, [txs, filterCat]);
 
       const totalHome = useMemo(() =>
@@ -896,7 +1044,9 @@
             </div>
           </header>
 
-          <main className="max-w-lg mx-auto px-4 pt-4">
+          <main className="max-w-lg mx-auto px-4 pt-4"
+            onTouchStart={onTouchStart}
+            onTouchEnd={onTouchEnd}>
             {/* summary card */}
             <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 mb-4 shadow-sm">
               <div className="text-xs text-zinc-500 mb-1">本趟總花費（已換算）</div>
@@ -931,6 +1081,11 @@
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-semibold truncate">{tx.category}</span>
                                 <span className="text-xs text-zinc-400">{tx.date}</span>
+                                {tx.created_at && (
+                                  <span className="text-[10px] text-zinc-400" title="入帳時間">
+                                    {formatEntryTime(tx.created_at)}
+                                  </span>
+                                )}
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500">{tx.payer}</span>
                               </div>
                               {tx.note && <div className="text-sm text-zinc-500 truncate mt-0.5">{tx.note}</div>}
