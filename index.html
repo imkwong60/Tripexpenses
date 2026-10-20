@@ -616,9 +616,9 @@
             // travelCurrency、myName 保持本機
           };
         });
-        // 成員改為共用：與雲端合併（不會蓋掉本機剛新增的名字）
+        // 成員與匯率相同：雲端有資料時以雲端為準（新增／刪除可即時同步到其他裝置）
         if (Array.isArray(row.members)) {
-          setMembers(prev => mergeMembers(row.members, prev));
+          setMembers(row.members);
         }
       }, [setLedger, setMembers]);
 
