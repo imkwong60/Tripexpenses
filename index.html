@@ -94,7 +94,7 @@
 
     // ---------- helpers ----------
     const generateId = () => crypto.randomUUID?.() || Math.random().toString(36).slice(2, 11);
-    const formatMoney = (n, symbol = 'NT$') => {
+    const formatMoney = (n, symbol = 'HK$') => {
       const str = new Intl.NumberFormat('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(n || 0);
       return `${symbol} ${str}`;
     };
@@ -267,9 +267,39 @@
     // 首次開啟：暱稱 + 旅遊貨幣（本機，不同步）
     const WelcomeModal = ({ onStart }) => {
       const [name, setName] = useState('');
-      const [tripName, setTripName] = useState('家人旅遊');
+      const [tripName, setTripName] = useState('');
       const [travelCur, setTravelCur] = useState('JPY');
-      const [homeCur, setHomeCur] = useState('TWD');
+      const [homeCur, setHomeCur] = useState('HKD');
+      const [loadingCloud, setLoadingCloud] = useState(true);
+
+      // 開啟時從雲端讀取行程名稱、本國貨幣（若已有共用設定）
+      useEffect(() => {
+        let cancelled = false;
+        (async () => {
+          if (!sb) {
+            setTripName('家人旅遊');
+            setLoadingCloud(false);
+            return;
+          }
+          try {
+            const { data } = await sb.from('ledgers').select('name, home_currency').eq('code', FIXED_LEDGER_CODE).maybeSingle();
+            if (cancelled) return;
+            if (data) {
+              if (data.name) setTripName(data.name);
+              else setTripName('家人旅遊');
+              if (data.home_currency) setHomeCur(data.home_currency);
+            } else {
+              setTripName('家人旅遊');
+            }
+          } catch (e) {
+            console.warn('welcome pull ledger', e);
+            if (!cancelled) setTripName('家人旅遊');
+          } finally {
+            if (!cancelled) setLoadingCloud(false);
+          }
+        })();
+        return () => { cancelled = true; };
+      }, []);
 
       return (
         <Modal onClose={() => {}}>
@@ -285,10 +315,13 @@
                   autoFocus />
               </div>
               <div>
-                <label className="block text-xs text-zinc-500 mb-1">行程名稱（可之後改）</label>
+                <label className="block text-xs text-zinc-500 mb-1">
+                  行程名稱（可之後改）{loadingCloud && <span className="text-zinc-400"> · 讀取中…</span>}
+                </label>
                 <input type="text" placeholder="例如：日本東京 2026" value={tripName}
                   onChange={e => setTripName(e.target.value)}
-                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                  disabled={loadingCloud}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 disabled:opacity-60" />
               </div>
               <div>
                 <label className="block text-xs text-zinc-500 mb-1">旅遊貨幣（本機 · 入帳預設）</label>
@@ -306,7 +339,7 @@
                 </select>
                 <p className="text-[11px] text-zinc-400 mt-1">若雲端已有設定，會以雲端為準並同步給全家人</p>
               </div>
-              <button type="button" disabled={!name.trim()}
+              <button type="button" disabled={!name.trim() || loadingCloud}
                 onClick={() => onStart(name.trim(), (tripName || '家人旅遊').trim(), travelCur, homeCur)}
                 className="w-full py-2.5 text-sm font-medium bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg disabled:opacity-40">
                 進入共用帳本
@@ -349,7 +382,7 @@
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1">本國貨幣（共用 · 結算用）</label>
-                <select value={local.homeCurrency || 'TWD'} onChange={e => setLocal({...local, homeCurrency: e.target.value})}
+                <select value={local.homeCurrency || 'HKD'} onChange={e => setLocal({...local, homeCurrency: e.target.value})}
                   className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800">
                   {CURRENCIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
                 </select>
@@ -359,7 +392,7 @@
                 <label className="block text-sm font-medium mb-2">匯率（1 單位外幣 = ? 本國貨幣）</label>
                 <p className="text-xs text-zinc-500 mb-2">儲存後會同步給全家人，大家換算／結算數字一致。可設為 1 或任意正數。</p>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {CURRENCIES.filter(c => c.key !== (local.homeCurrency || 'TWD')).map(c => {
+                  {CURRENCIES.filter(c => c.key !== (local.homeCurrency || 'HKD')).map(c => {
                     const rateVal = (local.rates || {})[c.key];
                     // 顯示時：數字直接顯示；空白字串保留以便編輯；undefined 顯示空（不強制 1）
                     const display = rateVal === undefined || rateVal === null ? '' : rateVal;
@@ -541,15 +574,15 @@
 
       const convert = useCallback((amount, fromCur) => {
         if (!ledger) return amount;
-        const home = ledger.homeCurrency || 'TWD';
+        const home = ledger.homeCurrency || 'HKD';
         if (fromCur === home) return amount;
         const rate = (ledger.rates || {})[fromCur] ?? 1;
         return amount * rate;
       }, [ledger]);
 
       const homeSymbol = useMemo(() => {
-        const c = CURRENCIES.find(x => x.key === (ledger?.homeCurrency || 'TWD'));
-        return c?.symbol || 'NT$';
+        const c = CURRENCIES.find(x => x.key === (ledger?.homeCurrency || 'HKD'));
+        return c?.symbol || 'HK$';
       }, [ledger]);
 
       // ---------- Supabase sync ----------
@@ -577,7 +610,7 @@
           return {
             ...prev,
             tripName: row.name || prev.tripName,
-            homeCurrency: row.home_currency || prev.homeCurrency || 'TWD',
+            homeCurrency: row.home_currency || prev.homeCurrency || 'HKD',
             rates: nextRates,
             code: FIXED_LEDGER_CODE
             // travelCurrency、myName 保持本機
@@ -607,7 +640,7 @@
         const base = {
           code: FIXED_LEDGER_CODE,
           name: settings.tripName || '家人旅遊',
-          home_currency: settings.homeCurrency || 'TWD',
+          home_currency: settings.homeCurrency || 'HKD',
           rates: settings.rates || {},
           updated_at: nowISO()
         };
@@ -749,7 +782,7 @@
           code: FIXED_LEDGER_CODE,
           tripName: tripName || '家人旅遊',
           travelCurrency: travelCurrency || 'JPY', // 本機，不同步
-          homeCurrency: homeCurrency || 'TWD',     // 共用
+          homeCurrency: homeCurrency || 'HKD',     // 共用
           rates: {},
           myName
         };
