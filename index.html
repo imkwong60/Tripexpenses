@@ -1017,10 +1017,10 @@
         return m;
       }, [txs, convert]);
 
-      // 結算：只根據交易紀錄中出現過的付款人計算（不含僅在成員名單、從未付過款的人）
+      // simple settlement: each person should pay total/n, net = paid - should
       const settlement = useMemo(() => {
-        const people = Object.keys(byPayer).filter(Boolean).sort();
-        if (people.length === 0) return { nets: [], transfers: [], fair: 0, total: 0 };
+        const people = [...new Set([...members, ...Object.keys(byPayer)])];
+        if (people.length === 0) return [];
         const total = totalHome;
         const fair = total / people.length;
         const nets = people.map(p => ({
@@ -1048,7 +1048,7 @@
           if (Math.abs(c.net) < 0.01) j++;
         }
         return { nets, transfers, fair, total };
-      }, [byPayer, totalHome]);
+      }, [members, byPayer, totalHome]);
 
       // ---------- render ----------
       // 只有尚未設定暱稱時才顯示歡迎頁（避免同步過程把人打回去）
@@ -1121,7 +1121,7 @@
             <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 mb-4 shadow-sm">
               <div className="text-xs text-zinc-500 mb-1">本趟總花費（已換算）</div>
               <div className="text-2xl font-bold font-mono tracking-tight">{formatMoney(totalHome, homeSymbol)}</div>
-              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {Object.keys(byPayer).length || members.length} 人</div>
+              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {members.length || Object.keys(byPayer).length} 人</div>
             </div>
 
             {tab === 'list' && (
