@@ -1083,9 +1083,6 @@
                             </div>
                             <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-zinc-400 min-w-0">
                               <span className="shrink-0">{tx.date}</span>
-                              {tx.created_at && (
-                                <span className="shrink-0" title="入帳時間">{formatEntryTime(tx.created_at)}</span>
-                              )}
                               <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 truncate max-w-[6rem]">{tx.payer}</span>
                             </div>
                           </div>
