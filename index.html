@@ -663,9 +663,10 @@
         }
       }, []);
 
-      const pullFromCloud = useCallback(async (code) => {
+      // silent=true 時不顯示「同步中」（給定時輪詢用）
+      const pullFromCloud = useCallback(async (code, silent = false) => {
         if (!sb || !code) return;
-        setSyncing(true);
+        if (!silent) setSyncing(true);
         try {
           await pullLedgerSettings(code);
           const { data, error } = await sb
@@ -693,13 +694,13 @@
             if (payers.length) {
               setMembers(prev => mergeMembers(prev, payers));
             }
-            setStatusText('已同步 ' + data.length + ' 筆（含匯率）');
+            if (!silent) setStatusText('已同步 ' + data.length + ' 筆（含匯率）');
           }
         } catch (e) {
           console.warn(e);
-          setStatusText('同步失敗（可離線使用）');
+          if (!silent) setStatusText('同步失敗（可離線使用）');
         } finally {
-          setSyncing(false);
+          if (!silent) setSyncing(false);
         }
       }, [setTxs, pullLedgerSettings]);
 
@@ -742,32 +743,68 @@
         setSyncing(false);
       }, [sb, ledger, online, pendingQueue, setPendingQueue, pullFromCloud, pushLedgerSettings]);
 
-      // Realtime：交易 + 帳本設定（匯率）同時訂閱
+      // Realtime + 定時輪詢（備援）：確保別人改了資料會自動更新
       useEffect(() => {
         if (!ledger?.code || !sb) return;
-        pullFromCloud(ledger.code);
+        const code = ledger.code;
+        let alive = true;
+        let pullTimer = null;
 
-        const channel = sb.channel('sync-' + ledger.code)
+        const safePull = (silent = true) => {
+          if (!alive || document.hidden) return;
+          pullFromCloud(code, silent);
+        };
+
+        // 進頁先拉一次（顯示狀態）
+        safePull(false);
+
+        // Realtime：不帶 server filter（較穩定），本機再判斷是否同一帳本
+        // 若仍收不到事件，通常是 RLS 擋住 anon SELECT（請跑下方 SQL）
+        const channel = sb.channel('ledger-rt-' + code)
           .on('postgres_changes', {
             event: '*',
             schema: 'public',
-            table: 'transactions',
-            filter: `ledger_code=eq.${ledger.code}`
-          }, () => {
-            pullFromCloud(ledger.code);
-          })
-          .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'ledgers',
-            filter: `code=eq.${ledger.code}`
+            table: 'transactions'
           }, (payload) => {
-            if (payload.new) applyLedgerRow(payload.new);
-            else pullLedgerSettings(ledger.code);
+            const row = payload.new || payload.old;
+            if (!row || row.ledger_code === code) safePull(true);
           })
-          .subscribe();
+          .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: 'ledgers'
+          }, (payload) => {
+            const row = payload.new || payload.old;
+            if (!row || row.code === code) {
+              if (payload.new) applyLedgerRow(payload.new);
+              else pullLedgerSettings(code);
+            }
+          })
+          .subscribe((status) => {
+            console.info('[Travel Ledger] realtime status:', status);
+            if (status === 'SUBSCRIBED') {
+              setStatusText('即時同步已連線');
+            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+              setStatusText('即時同步未就緒，改用定時更新');
+            }
+          });
 
-        return () => { sb.removeChannel(channel); };
+        // 定時輪詢備援（每 5 秒），即使 Realtime 沒開也能自動更新
+        const pollId = setInterval(() => safePull(true), 5000);
+
+        // 從背景回到前景時立刻拉一次
+        const onVis = () => {
+          if (!document.hidden) safePull(true);
+        };
+        document.addEventListener('visibilitychange', onVis);
+
+        return () => {
+          alive = false;
+          clearInterval(pollId);
+          if (pullTimer) clearTimeout(pullTimer);
+          document.removeEventListener('visibilitychange', onVis);
+          sb.removeChannel(channel);
+        };
       }, [ledger?.code]);
 
       // flush when back online
@@ -980,10 +1017,10 @@
         return m;
       }, [txs, convert]);
 
-      // simple settlement: each person should pay total/n, net = paid - should
+      // 結算：只根據交易紀錄中出現過的付款人計算（不含僅在成員名單、從未付過款的人）
       const settlement = useMemo(() => {
-        const people = [...new Set([...members, ...Object.keys(byPayer)])];
-        if (people.length === 0) return [];
+        const people = Object.keys(byPayer).filter(Boolean).sort();
+        if (people.length === 0) return { nets: [], transfers: [], fair: 0, total: 0 };
         const total = totalHome;
         const fair = total / people.length;
         const nets = people.map(p => ({
@@ -1011,7 +1048,7 @@
           if (Math.abs(c.net) < 0.01) j++;
         }
         return { nets, transfers, fair, total };
-      }, [members, byPayer, totalHome]);
+      }, [byPayer, totalHome]);
 
       // ---------- render ----------
       // 只有尚未設定暱稱時才顯示歡迎頁（避免同步過程把人打回去）
@@ -1084,7 +1121,7 @@
             <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 mb-4 shadow-sm">
               <div className="text-xs text-zinc-500 mb-1">本趟總花費（已換算）</div>
               <div className="text-2xl font-bold font-mono tracking-tight">{formatMoney(totalHome, homeSymbol)}</div>
-              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {members.length || Object.keys(byPayer).length} 人</div>
+              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {Object.keys(byPayer).length || members.length} 人</div>
             </div>
 
             {tab === 'list' && (
