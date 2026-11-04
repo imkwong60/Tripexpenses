@@ -700,13 +700,30 @@
     const SettingsModal = ({ settings, members, onSave, onClose, onLeave }) => {
       const [local, setLocal] = useState({ ...settings });
       const [memberInput, setMemberInput] = useState('');
-      const [localMembers, setLocalMembers] = useState([...members]);
+      const [localMembers, setLocalMembers] = useState(() => [...(members || [])]);
+      const memberInputRef = useRef(null);
+      const composingRef = useRef(false);
 
       const addMember = () => {
-        const n = memberInput.trim();
-        if (!n || localMembers.includes(n)) return;
-        setLocalMembers([...localMembers, n]);
+        // 中文輸入法組字中勿打斷；優先讀 ref 以避開受控延遲
+        if (composingRef.current) return;
+        const raw = (memberInputRef.current?.value ?? memberInput) || '';
+        const n = raw.trim();
+        if (!n) {
+          memberInputRef.current?.focus();
+          return;
+        }
+        const exists = localMembers.some(m => m.toLowerCase() === n.toLowerCase());
+        if (exists) {
+          alert('成員「' + n + '」已在名單中');
+          setMemberInput('');
+          if (memberInputRef.current) memberInputRef.current.value = '';
+          return;
+        }
+        setLocalMembers(prev => [...prev, n]);
         setMemberInput('');
+        if (memberInputRef.current) memberInputRef.current.value = '';
+        setTimeout(() => memberInputRef.current?.focus(), 0);
       };
 
       return (
@@ -770,20 +787,42 @@
               </div>
               <div>
                 <label className="block text-sm font-medium mb-2">成員</label>
-                <div className="flex flex-wrap gap-2 mb-2">
+                <div className="flex flex-wrap gap-2 mb-2 min-h-[2rem]">
+                  {localMembers.length === 0 && (
+                    <span className="text-xs text-zinc-400">尚未新增成員</span>
+                  )}
                   {localMembers.map(m => (
                     <span key={m} className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800">
                       {m}
-                      <button type="button" onClick={() => setLocalMembers(localMembers.filter(x => x !== m))} className="text-zinc-400 hover:text-red-500">×</button>
+                      <button type="button" onClick={() => setLocalMembers(prev => prev.filter(x => x !== m))} className="text-zinc-400 hover:text-red-500 ml-0.5" aria-label={'移除 ' + m}>×</button>
                     </span>
                   ))}
                 </div>
                 <div className="flex gap-2">
-                  <input value={memberInput} onChange={e => setMemberInput(e.target.value)} placeholder="新增成員"
-                    className="flex-1 px-3 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800"
-                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addMember())} />
-                  <button type="button" onClick={addMember} className="px-3 py-1.5 text-sm bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg">新增</button>
+                  <input
+                    ref={memberInputRef}
+                    value={memberInput}
+                    onChange={e => setMemberInput(e.target.value)}
+                    onCompositionStart={() => { composingRef.current = true; }}
+                    onCompositionEnd={e => {
+                      composingRef.current = false;
+                      setMemberInput(e.target.value);
+                    }}
+                    placeholder="輸入名字後按新增"
+                    className="flex-1 px-3 py-2 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (!composingRef.current) addMember();
+                      }
+                    }}
+                  />
+                  <button type="button" onClick={addMember}
+                    className="px-4 py-2 text-sm font-medium bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg shrink-0">
+                    新增
+                  </button>
                 </div>
+                <p className="text-[11px] text-zinc-400 mt-1">新增後請再按下方「儲存」才會同步給家人</p>
               </div>
             </div>
             <div className="flex justify-between items-center mt-8">
@@ -1292,9 +1331,16 @@
           return [tx, ...prev];
         });
         let nextMembers = members;
-        if (tx.payer && !members.includes(tx.payer)) {
-          nextMembers = mergeMembers(members, [tx.payer]);
-          setMembers(nextMembers);
+        {
+          const extra = [tx.payer];
+          if (tx.shares && typeof tx.shares === 'object') {
+            Object.keys(tx.shares).forEach(k => extra.push(k));
+          }
+          const merged = mergeMembers(members, extra);
+          if (merged.length !== members.length || merged.some((m, i) => m !== members[i])) {
+            nextMembers = merged;
+            setMembers(nextMembers);
+          }
         }
 
         if (!online || !sb || !ledger?.code) {
@@ -1452,15 +1498,16 @@
        * tableRows: 供「計算過程」表格用（成員為欄、項目為列）
        */
       const settlement = useMemo(() => {
-        const peopleSet = new Set([
-          ...members,
-          ...Object.keys(byPayer),
-          ...loans.flatMap(l => [l.from_member, l.to_member])
-        ]);
-        const people = [...peopleSet].filter(Boolean);
+        // 結算只計算「設定裡的現有成員」；已刪除的成員不再列入淨額／建議轉帳
+        const people = [...new Set(
+          (members || []).map(m => String(m || '').trim()).filter(Boolean)
+        )];
         if (people.length === 0) {
-          return { nets: [], transfers: [], tableRows: [], people: [], total: 0 };
+          return { nets: [], transfers: [], tableRows: [], people: [], total: 0, orphanPaid: 0 };
         }
+        const inCircle = (name) => people.includes(String(name || '').trim());
+        // 已被移除但仍出現在舊帳的付款（僅作提示，不列入結算人名）
+        let orphanPaid = 0;
 
         const paid = {};
         const fair = {};
@@ -1477,23 +1524,31 @@
           return (a.created_at || '').localeCompare(b.created_at || '');
         });
 
-        txsAsc.forEach((t, idx) => {
+        txsAsc.forEach((t) => {
           const amtHome = convert(t.amount, t.currency);
-          paid[t.payer] = (paid[t.payer] || 0) + amtHome;
+          const payer = String(t.payer || '').trim();
+          if (inCircle(payer)) {
+            paid[payer] = (paid[payer] || 0) + amtHome;
+          } else if (payer) {
+            orphanPaid += amtHome;
+          }
 
-          let shares = t.shares && typeof t.shares === 'object' && Object.keys(t.shares).length
-            ? (() => {
-                const o = {};
-                people.forEach(m => {
-                  const v = parseFloat(t.shares[m]);
-                  // 缺省視為 100（與表單預設一致）；明確 0 則 0
-                  o[m] = (t.shares[m] === undefined || t.shares[m] === null || t.shares[m] === '')
-                    ? 100
-                    : (isNaN(v) || v < 0 ? 0 : Math.min(100, v));
-                });
-                return o;
-              })()
-            : defaultShares(people);
+          // 只對「現有成員」算參與比例；已刪除成員的舊 shares 一律忽略
+          let shares;
+          if (t.shares && typeof t.shares === 'object' && Object.keys(t.shares).length) {
+            shares = {};
+            people.forEach(m => {
+              if (!(m in t.shares) || t.shares[m] === '' || t.shares[m] === null || t.shares[m] === undefined) {
+                // 該筆有寫 shares、但沒寫到這個現有成員 → 視為未參與
+                shares[m] = 0;
+              } else {
+                const v = parseFloat(t.shares[m]);
+                shares[m] = (isNaN(v) || v < 0) ? 0 : Math.min(100, v);
+              }
+            });
+          } else {
+            shares = defaultShares(people);
+          }
 
           const active = Object.entries(shares).filter(([, v]) => v > 0);
           const sumShare = active.reduce((s, [, v]) => s + v, 0);
@@ -1509,6 +1564,7 @@
             });
           } else {
             active.forEach(([name, pct]) => {
+              if (!inCircle(name)) return;
               const shareAmt = amtHome * (pct / sumShare);
               fair[name] = (fair[name] || 0) + shareAmt;
               cells[name] = shareAmt;
@@ -1517,7 +1573,7 @@
 
           const noteBits = [];
           if (t.note) noteBits.push(t.note);
-          noteBits.push(`付：${t.payer}`);
+          noteBits.push(`付：${payer || '—'}${inCircle(payer) ? '' : '（已非成員）'}`);
           const zeroPeople = people.filter(p => !(shares[p] > 0));
           if (zeroPeople.length) noteBits.push(`未參與：${zeroPeople.join('、')}`);
 
@@ -1530,18 +1586,21 @@
           });
         });
 
-        // 借款列（對淨額的調整，不是應分攤）
+        // 借款：只處理雙方都仍在成員名單內的
         loans.forEach(l => {
+          const from = String(l.from_member || '').trim();
+          const to = String(l.to_member || '').trim();
+          if (!inCircle(from) || !inCircle(to)) return;
           const amtHome = convert(l.amount, l.currency);
-          loanAdj[l.from_member] = (loanAdj[l.from_member] || 0) - amtHome;
-          loanAdj[l.to_member] = (loanAdj[l.to_member] || 0) + amtHome;
+          loanAdj[from] = (loanAdj[from] || 0) - amtHome;
+          loanAdj[to] = (loanAdj[to] || 0) + amtHome;
           const cells = {};
           people.forEach(p => { cells[p] = 0; });
-          cells[l.from_member] = -amtHome;
-          cells[l.to_member] = amtHome;
+          cells[from] = -amtHome;
+          cells[to] = amtHome;
           tableRows.push({
             kind: 'loan',
-            label: `借款 ${l.from_member}→${l.to_member}`,
+            label: `借款 ${from}→${to}`,
             sub: l.note || l.date || '',
             amount: amtHome,
             cells
@@ -1569,26 +1628,36 @@
         if (loans.length) tableRows.push({ kind: 'sum', label: '借款調整', cells: loanCells });
         tableRows.push({ kind: 'net', label: '淨額（應收+/應付−）', cells: netCells });
 
-        // transfers
-        const debtors = nets.filter(n => n.net < -0.01).map(n => ({ ...n }));
-        const creditors = nets.filter(n => n.net > 0.01).map(n => ({ ...n }));
+        // transfers：精準到分，確保每位有淨額的成員都會出現在建議轉帳
+        const round2 = (x) => Math.round((x || 0) * 100) / 100;
+        const debtors = nets
+          .filter(n => round2(n.net) < -0.009)
+          .map(n => ({ name: n.name, net: round2(n.net) }))
+          .sort((a, b) => a.net - b.net);
+        const creditors = nets
+          .filter(n => round2(n.net) > 0.009)
+          .map(n => ({ name: n.name, net: round2(n.net) }))
+          .sort((a, b) => b.net - a.net);
         const transfers = [];
-        let i = 0, j = 0;
-        while (i < debtors.length && j < creditors.length) {
-          const d = debtors[i];
-          const c = creditors[j];
-          const amount = Math.min(-d.net, c.net);
-          if (amount > 0.01) {
+        let di = 0, ci = 0;
+        // 安全上限避免異常迴圈
+        let guard = 0;
+        while (di < debtors.length && ci < creditors.length && guard < 500) {
+          guard++;
+          const d = debtors[di];
+          const c = creditors[ci];
+          const amount = round2(Math.min(-d.net, c.net));
+          if (amount >= 0.01) {
             transfers.push({ from: d.name, to: c.name, amount });
-            d.net += amount;
-            c.net -= amount;
+            d.net = round2(d.net + amount);
+            c.net = round2(c.net - amount);
           }
-          if (Math.abs(d.net) < 0.01) i++;
-          if (Math.abs(c.net) < 0.01) j++;
+          if (Math.abs(d.net) < 0.01) di++;
+          if (Math.abs(c.net) < 0.01) ci++;
         }
 
-        return { nets, transfers, tableRows, people, total: totalHome, paid, fair, loanAdj };
-      }, [members, byPayer, txs, loans, convert, homeSymbol, totalHome]);
+        return { nets, transfers, tableRows, people, total: totalHome, paid, fair, loanAdj, orphanPaid };
+      }, [members, txs, loans, convert, homeSymbol, totalHome]);
 
       // ---------- render ----------
       if (!ledger?.myName || isWelcomeOpen) {
@@ -1615,9 +1684,18 @@
                   <span className="text-zinc-500">你好，{ledger.myName}</span>
                   <span className="text-zinc-300 dark:text-zinc-600">·</span>
                   {online ? (
-                    <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><Icons.Cloud /> 共用同步中</span>
+                    <span className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400" title="在線 · 共用同步中">
+                      <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                      </span>
+                      在線
+                    </span>
                   ) : (
-                    <span className="flex items-center gap-1 text-amber-600"><Icons.Offline /> 離線</span>
+                    <span className="flex items-center gap-1.5 text-amber-600" title="離線">
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                      離線
+                    </span>
                   )}
                   {pendingQueue.length > 0 && <span className="text-amber-600">· {pendingQueue.length} 筆待傳</span>}
                 </div>
@@ -1681,12 +1759,15 @@
                     {filtered.map(tx => {
                       const cur = CURRENCIES.find(c => c.key === tx.currency);
                       const shares = tx.shares && typeof tx.shares === 'object' ? tx.shares : null;
-                      const activeShares = shares ? Object.entries(shares).filter(([, v]) => v > 0) : null;
-                      const hasPartial = activeShares && members.length > 0 && activeShares.length < members.length;
+                      // 只顯示未參與者（比例為 0）；全員有參與則不顯示
+                      const nonParticipants = shares
+                        ? Object.entries(shares)
+                            .filter(([n, v]) => Number(v) === 0 && members.includes(n))
+                            .map(([n]) => n)
+                        : [];
                       const rUrl = receiptPublicUrl(tx.receipt_path, tx.updated_at || tx.created_at || tx.id);
                       return (
                         <div key={tx.id} className="px-3.5 py-3 flex items-center gap-3 group">
-                          <div className="w-9 h-9 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 flex items-center justify-center text-base shrink-0">−</div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 min-w-0">
                               <span className="font-semibold text-sm truncate">{tx.category}</span>
@@ -1699,9 +1780,9 @@
                             <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-zinc-400 min-w-0 flex-wrap">
                               <span className="shrink-0">{tx.date}</span>
                               <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 truncate max-w-[6rem]">{tx.payer}</span>
-                              {hasPartial && (
-                                <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                                  參與：{activeShares.map(([n, p]) => `${n}${p < 100 ? p + '%' : ''}`).join('、')}
+                              {nonParticipants.length > 0 && (
+                                <span className="text-[10px] text-zinc-400">
+                                  未參與：{nonParticipants.join('、')}
                                 </span>
                               )}
                             </div>
@@ -1742,8 +1823,13 @@
                   <p className="text-xs text-zinc-500 mb-3">
                     共同支出總額 {formatMoney(settlement.total, homeSymbol)}
                     {loans.length > 0 && ` · 含 ${loans.length} 筆私人借款`}
-                    （已依參與比例分攤）
+                    （僅計算設定中的成員）
                   </p>
+                  {settlement.orphanPaid > 0.01 && (
+                    <p className="text-[11px] text-amber-600 dark:text-amber-400 mb-3">
+                      有已移除成員的付款約 {formatMoney(settlement.orphanPaid, homeSymbol)} 未計入其「已付」，費用仍由現有成員分攤。
+                    </p>
+                  )}
                   <div className="space-y-2">
                     {(settlement.nets || []).map(n => (
                       <div key={n.name} className="flex items-center justify-between text-sm">
