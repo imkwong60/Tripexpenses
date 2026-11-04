@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
-  <title>旅遊記帳 Travel Ledger</title>
-  <meta name="description" content="家人出國旅遊即時同步記帳 PWA" />
+  <title>旅遊本本</title>
+  <meta name="description" content="家人出國旅遊即時同步記帳 · 旅遊本本" />
   <meta name="theme-color" content="#18181b" media="(prefers-color-scheme: dark)" />
   <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="旅遊記帳" />
+  <meta name="apple-mobile-web-app-title" content="旅遊本本" />
   <meta name="mobile-web-app-capable" content="yes" />
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icon-192.png" />
@@ -70,8 +70,9 @@
     const SUPABASE_URL = 'https://wanknivxcsrasdkkxmfr.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndhbmtuaXZ4Y3NyYXNka2t4bWZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODczMzE4NjcsImV4cCI6MjEwMjkwNzg2N30.tqsFimERtYCxoh8J-8FlqxByWtX2gNnyaGo08jditrs';
     // 全家人共用同一個固定帳本（不必輸入代碼，打開即同步）
-    // 若要換下一趟旅行，可改這個常數或在設定清除本機後重開
     const FIXED_LEDGER_CODE = 'FAMILY';
+    // Supabase Storage bucket 名稱（請先在 Dashboard 建立 public bucket: receipts）
+    const RECEIPT_BUCKET = 'receipts';
     // ================================================
 
     const sb = (window.supabase && window.supabase.createClient)
@@ -100,7 +101,6 @@
     };
     const today = () => new Date().toISOString().slice(0, 10);
     const nowISO = () => new Date().toISOString();
-    // 入帳時間顯示（本地時區）
     const formatEntryTime = (iso) => {
       if (!iso) return '';
       try {
@@ -114,6 +114,31 @@
       } catch { return ''; }
     };
 
+    /** 預設每人 100% 參與 */
+    const defaultShares = (memberList) => {
+      const o = {};
+      (memberList || []).forEach(m => { o[m] = 100; });
+      return o;
+    };
+
+    /** 正規化 shares：數字 0–100，缺的視為 0 */
+    const normalizeShares = (shares, memberList) => {
+      const o = {};
+      const src = shares && typeof shares === 'object' ? shares : {};
+      (memberList || []).forEach(m => {
+        const v = parseFloat(src[m]);
+        o[m] = (isNaN(v) || v < 0) ? 0 : Math.min(100, v);
+      });
+      // 保留不在名單但有值的（舊資料）
+      Object.keys(src).forEach(k => {
+        if (o[k] === undefined) {
+          const v = parseFloat(src[k]);
+          o[k] = (isNaN(v) || v < 0) ? 0 : Math.min(100, v);
+        }
+      });
+      return o;
+    };
+
     function useLocalStorage(key, initial) {
       const [val, setVal] = useState(() => {
         try {
@@ -121,7 +146,6 @@
           return raw ? JSON.parse(raw) : initial;
         } catch { return initial; }
       });
-      // 必須用 React 的 prev，避免連續 set 時讀到舊的 null 把狀態清掉（造成歡迎頁無限迴圈）
       const set = (v) => {
         setVal(prev => {
           const next = typeof v === 'function' ? v(prev) : v;
@@ -132,7 +156,7 @@
       return [val, set];
     }
 
-    // ---------- Icons (same style as Kumamon) ----------
+    // ---------- Icons ----------
     const Icons = {
       Plus: () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
       Trash: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>,
@@ -146,6 +170,10 @@
       Offline: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>,
       Share: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>,
       Refresh: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>,
+      Receipt: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 2v20l3-2 3 2 3-2 3 2 3-2 3 2V2l-3 2-3-2-3 2-3-2-3 2-3-2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="16" y2="11"/><line x1="8" y1="15" x2="12" y2="15"/></svg>,
+      Loan: () => <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>,
+      Chevron: ({ open }) => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${open ? 'rotate-180' : ''}`}><polyline points="6 9 12 15 18 9"/></svg>,
+      Image: () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>,
     };
 
     // ---------- UI primitives ----------
@@ -171,29 +199,167 @@
       );
     };
 
+    // ---------- Receipt: compress + upload ----------
+    /** 上傳前壓縮：最長邊 1600px、JPEG 品質 0.72，約可壓到幾百 KB */
+    const compressImage = (file, maxSide = 1600, quality = 0.72) => new Promise((resolve) => {
+      if (!file || !file.type || !file.type.startsWith('image/')) {
+        resolve(file);
+        return;
+      }
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          canvas.toBlob((blob) => {
+            URL.revokeObjectURL(url);
+            if (!blob) { resolve(file); return; }
+            const name = (file.name || 'receipt').replace(/\.[^.]+$/, '') + '.jpg';
+            resolve(new File([blob], name, { type: 'image/jpeg' }));
+          }, 'image/jpeg', quality);
+        } catch (e) {
+          URL.revokeObjectURL(url);
+          resolve(file);
+        }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+
+    const uploadReceipt = async (file, txId) => {
+      if (!sb || !file) return null;
+      const compressed = await compressImage(file);
+      const path = `${FIXED_LEDGER_CODE}/${txId}.jpg`;
+      const { error } = await sb.storage.from(RECEIPT_BUCKET).upload(path, compressed, {
+        upsert: true,
+        contentType: 'image/jpeg'
+      });
+      if (error) throw error;
+      const { data } = sb.storage.from(RECEIPT_BUCKET).getPublicUrl(path);
+      return { path, url: data?.publicUrl || null };
+    };
+
+    const receiptPublicUrl = (path) => {
+      if (!path) return null;
+      if (path.startsWith('http')) return path;
+      if (!sb) return null;
+      const { data } = sb.storage.from(RECEIPT_BUCKET).getPublicUrl(path);
+      return data?.publicUrl || null;
+    };
+
+    /** 刪除帳本下所有收據（清除帳目時用） */
+    const deleteAllReceipts = async () => {
+      if (!sb) return;
+      try {
+        const { data: files } = await sb.storage.from(RECEIPT_BUCKET).list(FIXED_LEDGER_CODE, { limit: 1000 });
+        if (!files || !files.length) return;
+        const paths = files.map(f => `${FIXED_LEDGER_CODE}/${f.name}`);
+        // 分批刪除
+        for (let i = 0; i < paths.length; i += 50) {
+          await sb.storage.from(RECEIPT_BUCKET).remove(paths.slice(i, i + 50));
+        }
+      } catch (e) {
+        console.warn('deleteAllReceipts', e);
+      }
+    };
+
     // ---------- Forms ----------
     const TxForm = ({ initial, members, travelCurrency, onSave, onClose }) => {
-      const [form, setForm] = useState(initial || {
-        amount: '', currency: travelCurrency || 'JPY', category: '餐飲',
-        payer: members[0] || '', note: '', date: today()
+      const memberList = members.length ? members : ['自己'];
+      const [form, setForm] = useState(() => {
+        const base = initial || {
+          amount: '', currency: travelCurrency || 'JPY', category: '餐飲',
+          payer: memberList[0] || '', note: '', date: today(),
+          shares: defaultShares(memberList),
+          receipt_path: null
+        };
+        // 編輯／新增：成員參與預設全為 100%；若既有 shares 有值則沿用，缺的成員補 100
+        const shares = defaultShares(memberList);
+        if (initial?.shares && typeof initial.shares === 'object') {
+          memberList.forEach(m => {
+            const v = parseFloat(initial.shares[m]);
+            if (!isNaN(v) && v >= 0) shares[m] = Math.min(100, v);
+          });
+        }
+        return { ...base, shares, receiptFile: null, receiptPreview: receiptPublicUrl(base.receipt_path) };
       });
       const amountRef = useRef(null);
+      const [uploading, setUploading] = useState(false);
 
       useEffect(() => { amountRef.current?.focus(); }, []);
 
-      const submit = (e) => {
+      const setShare = (name, val) => {
+        setForm(f => ({
+          ...f,
+          shares: { ...f.shares, [name]: val }
+        }));
+      };
+
+      const onFileChange = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = '';
+        if (!file) return;
+        if (file.size > 15 * 1024 * 1024) {
+          alert('原始圖片請小於 15MB（上傳前會自動壓縮）');
+          return;
+        }
+        setUploading(true);
+        try {
+          const compressed = await compressImage(file);
+          const preview = URL.createObjectURL(compressed);
+          setForm(f => ({ ...f, receiptFile: compressed, receiptPreview: preview }));
+        } catch {
+          const preview = URL.createObjectURL(file);
+          setForm(f => ({ ...f, receiptFile: file, receiptPreview: preview }));
+        }
+        setUploading(false);
+      };
+
+      const clearReceipt = () => {
+        setForm(f => ({ ...f, receiptFile: null, receiptPreview: null, receipt_path: null }));
+      };
+
+      const submit = async (e) => {
         e.preventDefault();
         const amt = parseFloat(String(form.amount).replace(/,/g, ''));
         if (!amt || amt <= 0) { alert('請輸入有效金額'); return; }
         if (!form.payer.trim()) { alert('請填寫付款人'); return; }
+        const shares = normalizeShares(form.shares, memberList);
+        const sumShare = Object.values(shares).reduce((s, v) => s + v, 0);
+        if (sumShare <= 0) { alert('至少一位成員參與比例要大於 0'); return; }
+
+        let receipt_path = form.receipt_path || null;
+        const txId = initial?.id || generateId();
+
+        if (form.receiptFile && sb) {
+          setUploading(true);
+          try {
+            const up = await uploadReceipt(form.receiptFile, txId);
+            receipt_path = up?.path || null;
+          } catch (err) {
+            console.warn('receipt upload', err);
+            alert('收據上傳失敗，仍會儲存帳目（可之後再編輯補傳）');
+          }
+          setUploading(false);
+        }
+
         onSave({
           ...form,
-          id: initial?.id || generateId(),
+          id: txId,
           amount: Math.round(amt * 100) / 100,
           category: form.category || '其他',
           payer: form.payer.trim(),
           note: (form.note || '').trim(),
           date: form.date || today(),
+          shares,
+          receipt_path,
           created_at: initial?.created_at || nowISO(),
           updated_at: nowISO(),
           _pending: !navigator.onLine
@@ -232,7 +398,7 @@
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">付款人</label>
                 <div className="flex flex-wrap gap-2 mb-2">
-                  {members.map(m => (
+                  {memberList.map(m => (
                     <button key={m} type="button" onClick={() => setForm({...form, payer: m})}
                       className={`text-xs px-2.5 py-1 rounded-full ${form.payer === m ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400'}`}>
                       {m}
@@ -243,6 +409,48 @@
                   onChange={e => setForm({...form, payer: e.target.value})}
                   className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-white" />
               </div>
+
+              {/* 參與比例 */}
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
+                  成員參與比例
+                </label>
+                <p className="text-[11px] text-zinc-400 mb-2">預設 100%。設為 0% 表示未參與，結算時不計算該人。</p>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {memberList.map(m => (
+                    <div key={m} className="flex items-center gap-2">
+                      <span className="w-16 text-sm truncate shrink-0">{m}</span>
+                      <input type="range" min="0" max="100" step="1"
+                        value={form.shares?.[m] ?? 100}
+                        onChange={e => setShare(m, parseInt(e.target.value, 10))}
+                        className="flex-1 accent-zinc-900 dark:accent-white" />
+                      <input type="number" min="0" max="100" step="1"
+                        value={form.shares?.[m] ?? 100}
+                        onChange={e => {
+                          const v = parseInt(e.target.value, 10);
+                          setShare(m, isNaN(v) ? 0 : Math.max(0, Math.min(100, v)));
+                        }}
+                        className="w-14 px-1.5 py-1 text-sm text-center border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                      <span className="text-xs text-zinc-400">%</span>
+                      <button type="button"
+                        onClick={() => setShare(m, (form.shares?.[m] ?? 100) > 0 ? 0 : 100)}
+                        className={`text-[10px] px-1.5 py-0.5 rounded ${ (form.shares?.[m] ?? 100) > 0 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-zinc-100 text-zinc-400 dark:bg-zinc-800' }`}>
+                        {(form.shares?.[m] ?? 100) > 0 ? '有' : '無'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <button type="button" onClick={() => setForm(f => ({ ...f, shares: defaultShares(memberList) }))}
+                    className="text-[11px] text-zinc-500 underline">全部 100%</button>
+                  <button type="button" onClick={() => {
+                    const o = {};
+                    memberList.forEach(m => { o[m] = 0; });
+                    setForm(f => ({ ...f, shares: o }));
+                  }} className="text-[11px] text-zinc-500 underline">全部 0%</button>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">日期</label>
                 <input type="date" required value={form.date} onChange={e => setForm({...form, date: e.target.value})}
@@ -254,17 +462,141 @@
                   onChange={e => setForm({...form, note: e.target.value})}
                   className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
               </div>
+
+              {/* 收據上傳：相機或相簿，上傳前自動壓縮 */}
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">收據照片（選填）</label>
+                {form.receiptPreview ? (
+                  <div className="relative rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700">
+                    <img src={form.receiptPreview} alt="收據預覽" className="w-full max-h-40 object-contain bg-zinc-100 dark:bg-zinc-800" />
+                    <button type="button" onClick={clearReceipt}
+                      className="absolute top-2 right-2 bg-black/60 text-white text-xs px-2 py-1 rounded-lg">移除</button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="flex flex-col items-center justify-center gap-1 py-4 border border-dashed border-zinc-300 dark:border-zinc-600 rounded-xl cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
+                      <span className="text-lg">📷</span>
+                      <span className="text-xs text-zinc-500">拍照</span>
+                      <input type="file" accept="image/*" capture="environment" className="hidden" onChange={onFileChange} />
+                    </label>
+                    <label className="flex flex-col items-center justify-center gap-1 py-4 border border-dashed border-zinc-300 dark:border-zinc-600 rounded-xl cursor-pointer hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
+                      <Icons.Image />
+                      <span className="text-xs text-zinc-500">相簿選擇</span>
+                      <input type="file" accept="image/*" className="hidden" onChange={onFileChange} />
+                    </label>
+                  </div>
+                )}
+                <p className="text-[11px] text-zinc-400 mt-1">上傳前會自動壓縮，節省流量</p>
+              </div>
             </div>
             <div className="flex justify-end gap-3 mt-8">
               <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg">取消</button>
-              <button type="submit" className="px-5 py-2 text-sm font-medium text-white bg-zinc-900 dark:bg-white dark:text-zinc-900 rounded-lg shadow-sm">儲存</button>
+              <button type="submit" disabled={uploading}
+                className="px-5 py-2 text-sm font-medium text-white bg-zinc-900 dark:bg-white dark:text-zinc-900 rounded-lg shadow-sm disabled:opacity-50">
+                {uploading ? '上傳中…' : '儲存'}
+              </button>
             </div>
           </form>
         </Modal>
       );
     };
 
-    // 首次開啟：暱稱 + 旅遊貨幣（本機，不同步）
+    // 私人借款表單
+    const LoanForm = ({ initial, members, travelCurrency, onSave, onClose }) => {
+      const memberList = members.length ? members : [];
+      const [form, setForm] = useState(initial || {
+        amount: '', currency: travelCurrency || 'JPY',
+        from_member: memberList[0] || '', // 借款人（欠錢的）
+        to_member: memberList[1] || memberList[0] || '', // 出借人
+        note: '', date: today()
+      });
+      const amountRef = useRef(null);
+      useEffect(() => { amountRef.current?.focus(); }, []);
+
+      const submit = (e) => {
+        e.preventDefault();
+        const amt = parseFloat(String(form.amount).replace(/,/g, ''));
+        if (!amt || amt <= 0) { alert('請輸入有效金額'); return; }
+        if (!form.from_member.trim() || !form.to_member.trim()) { alert('請選擇借款人與出借人'); return; }
+        if (form.from_member.trim() === form.to_member.trim()) { alert('借款人與出借人不能相同'); return; }
+        onSave({
+          id: initial?.id || generateId(),
+          amount: Math.round(amt * 100) / 100,
+          currency: form.currency,
+          from_member: form.from_member.trim(),
+          to_member: form.to_member.trim(),
+          note: (form.note || '').trim(),
+          date: form.date || today(),
+          created_at: initial?.created_at || nowISO(),
+          updated_at: nowISO()
+        });
+      };
+
+      return (
+        <Modal onClose={onClose}>
+          <form onSubmit={submit} className="p-6">
+            <h2 className="text-xl font-bold mb-1">{initial ? '編輯私人借款' : '新增私人借款'}</h2>
+            <p className="text-xs text-zinc-500 mb-5">例如：A 向 C 借了 200 → 借款人 A、出借人 C。結算時會一併計算。</p>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">金額</label>
+                <div className="flex gap-2">
+                  <select value={form.currency} onChange={e => setForm({...form, currency: e.target.value})}
+                    className="w-24 px-2 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 text-sm">
+                    {CURRENCIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                  </select>
+                  <input ref={amountRef} type="text" inputMode="decimal" required placeholder="0"
+                    value={form.amount} onChange={e => setForm({...form, amount: e.target.value})}
+                    className="flex-1 px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 font-mono" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">借款人（欠錢的人）</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {memberList.map(m => (
+                    <button key={m} type="button" onClick={() => setForm({...form, from_member: m})}
+                      className={`text-xs px-2.5 py-1 rounded-full ${form.from_member === m ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600'}`}>
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <input type="text" value={form.from_member} onChange={e => setForm({...form, from_member: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">出借人（借出錢的人）</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {memberList.map(m => (
+                    <button key={m} type="button" onClick={() => setForm({...form, to_member: m})}
+                      className={`text-xs px-2.5 py-1 rounded-full ${form.to_member === m ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600'}`}>
+                      {m}
+                    </button>
+                  ))}
+                </div>
+                <input type="text" value={form.to_member} onChange={e => setForm({...form, to_member: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">日期</label>
+                <input type="date" required value={form.date} onChange={e => setForm({...form, date: e.target.value})}
+                  className="w-full h-11 px-3 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">備註（選填）</label>
+                <input type="text" placeholder="例如：臨時借現金" value={form.note}
+                  onChange={e => setForm({...form, note: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-8">
+              <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-zinc-600">取消</button>
+              <button type="submit" className="px-5 py-2 text-sm font-medium bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg">儲存</button>
+            </div>
+          </form>
+        </Modal>
+      );
+    };
+
     const WelcomeModal = ({ onStart }) => {
       const [name, setName] = useState('');
       const [tripName, setTripName] = useState('');
@@ -272,7 +604,6 @@
       const [homeCur, setHomeCur] = useState('HKD');
       const [loadingCloud, setLoadingCloud] = useState(true);
 
-      // 開啟時從雲端讀取行程名稱、本國貨幣（若已有共用設定）
       useEffect(() => {
         let cancelled = false;
         (async () => {
@@ -390,11 +721,10 @@
               </div>
               <div>
                 <label className="block text-sm font-medium mb-2">匯率（1 單位外幣 = ? 本國貨幣）</label>
-                <p className="text-xs text-zinc-500 mb-2">儲存後會同步給全家人，大家換算／結算數字一致。可設為 1 或任意正數。</p>
+                <p className="text-xs text-zinc-500 mb-2">儲存後會同步給全家人。可設為 1 或任意正數。</p>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
                   {CURRENCIES.filter(c => c.key !== (local.homeCurrency || 'HKD')).map(c => {
                     const rateVal = (local.rates || {})[c.key];
-                    // 顯示時：數字直接顯示；空白字串保留以便編輯；undefined 顯示空（不強制 1）
                     const display = rateVal === undefined || rateVal === null ? '' : rateVal;
                     return (
                       <div key={c.key} className="flex items-center gap-2">
@@ -403,29 +733,18 @@
                           value={display}
                           onChange={e => {
                             const raw = e.target.value;
-                            // 允許暫時空白或小數點，方便編輯；不強制改成 1
                             if (raw === '' || raw === '.' || raw === '-') {
-                              setLocal({
-                                ...local,
-                                rates: { ...(local.rates || {}), [c.key]: raw }
-                              });
+                              setLocal({ ...local, rates: { ...(local.rates || {}), [c.key]: raw } });
                               return;
                             }
                             const v = parseFloat(raw);
-                            setLocal({
-                              ...local,
-                              rates: { ...(local.rates || {}), [c.key]: isNaN(v) ? raw : v }
-                            });
+                            setLocal({ ...local, rates: { ...(local.rates || {}), [c.key]: isNaN(v) ? raw : v } });
                           }}
                           onBlur={e => {
-                            // 失焦時才正規化：空或 ≤0 改為 1
                             const raw = e.target.value;
                             const v = parseFloat(raw);
                             const final = (raw === '' || isNaN(v) || v <= 0) ? 1 : v;
-                            setLocal({
-                              ...local,
-                              rates: { ...(local.rates || {}), [c.key]: final }
-                            });
+                            setLocal({ ...local, rates: { ...(local.rates || {}), [c.key]: final } });
                           }}
                           className="flex-1 px-2 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
                       </div>
@@ -452,7 +771,7 @@
               </div>
             </div>
             <div className="flex justify-between items-center mt-8">
-              <button type="button" onClick={onLeave} className="text-sm text-red-600 dark:text-red-400">重設本機（換暱稱）</button>
+              <button type="button" onClick={onLeave} className="text-sm text-red-600 dark:text-red-400">清除所有帳目</button>
               <div className="flex gap-3">
                 <button type="button" onClick={onClose} className="px-4 py-2 text-sm text-zinc-600">取消</button>
                 <button type="button" onClick={() => onSave(local, localMembers)} className="px-5 py-2 text-sm font-medium bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 rounded-lg">儲存</button>
@@ -503,26 +822,30 @@
     // ---------- Main App ----------
     function App() {
       const [theme, setTheme] = useLocalStorage('tl-theme', 'system');
-      const [ledger, setLedger] = useLocalStorage('tl-ledger', null); // { code, tripName, travelCurrency(local), homeCurrency(shared), rates(shared), myName }
+      const [ledger, setLedger] = useLocalStorage('tl-ledger', null);
       const [members, setMembers] = useLocalStorage('tl-members', []);
       const [txs, setTxs] = useLocalStorage('tl-txs', []);
-      const [pendingQueue, setPendingQueue] = useLocalStorage('tl-pending', []); // offline writes
+      const [loans, setLoans] = useLocalStorage('tl-loans', []);
+      const [pendingQueue, setPendingQueue] = useLocalStorage('tl-pending', []);
       const [online, setOnline] = useState(navigator.onLine);
       const [syncing, setSyncing] = useState(false);
       const [statusText, setStatusText] = useState('');
-      const [tab, setTab] = useState('list'); // list | stats | settle
+      const [tab, setTab] = useState('list'); // list | stats | settle | loans
       const [isFormOpen, setIsFormOpen] = useState(false);
       const [editingTx, setEditingTx] = useState(null);
+      const [isLoanFormOpen, setIsLoanFormOpen] = useState(false);
+      const [editingLoan, setEditingLoan] = useState(null);
       const [isWelcomeOpen, setIsWelcomeOpen] = useState(!ledger?.myName);
       const [isSettingsOpen, setIsSettingsOpen] = useState(false);
       const [toast, setToast] = useState(null);
       const [filterCat, setFilterCat] = useState('all');
-      const TAB_ORDER = ['list', 'stats', 'settle'];
+      const [showSettleSteps, setShowSettleSteps] = useState(false);
+      const [previewReceipt, setPreviewReceipt] = useState(null);
+      const TAB_ORDER = ['list', 'stats', 'settle', 'loans'];
       const touchStartRef = useRef(null);
 
-      // 手指左右滑切換分頁（明細 ↔ 統計 ↔ 結算）
       const onTouchStart = (e) => {
-        if (isFormOpen || isSettingsOpen) return;
+        if (isFormOpen || isSettingsOpen || isLoanFormOpen) return;
         const t = e.changedTouches?.[0] || e.touches?.[0];
         if (!t) return;
         touchStartRef.current = { x: t.clientX, y: t.clientY, t: Date.now() };
@@ -530,23 +853,18 @@
       const onTouchEnd = (e) => {
         const start = touchStartRef.current;
         touchStartRef.current = null;
-        if (!start || isFormOpen || isSettingsOpen) return;
+        if (!start || isFormOpen || isSettingsOpen || isLoanFormOpen) return;
         const t = e.changedTouches?.[0];
         if (!t) return;
         const dx = t.clientX - start.x;
         const dy = t.clientY - start.y;
-        // 水平滑動為主、距離夠大、時間不太長
         if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
         if (Date.now() - start.t > 600) return;
         const idx = TAB_ORDER.indexOf(tab);
-        if (dx < 0 && idx < TAB_ORDER.length - 1) {
-          setTab(TAB_ORDER[idx + 1]); // 左滑 → 下一頁
-        } else if (dx > 0 && idx > 0) {
-          setTab(TAB_ORDER[idx - 1]); // 右滑 → 上一頁
-        }
+        if (dx < 0 && idx < TAB_ORDER.length - 1) setTab(TAB_ORDER[idx + 1]);
+        else if (dx > 0 && idx > 0) setTab(TAB_ORDER[idx - 1]);
       };
 
-      // 確保本機 ledger 永遠綁定固定共用代碼（舊版若有隨機代碼會自動校正）
       useEffect(() => {
         if (ledger && ledger.code !== FIXED_LEDGER_CODE) {
           setLedger({ ...ledger, code: FIXED_LEDGER_CODE });
@@ -555,7 +873,6 @@
 
       const showToast = (message, type = 'success') => setToast({ message, type });
 
-      // theme
       useEffect(() => {
         const root = document.documentElement;
         const preferDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -563,7 +880,6 @@
         root.classList.toggle('dark', dark);
       }, [theme]);
 
-      // online status
       useEffect(() => {
         const on = () => setOnline(true);
         const off = () => setOnline(false);
@@ -585,10 +901,6 @@
         return c?.symbol || 'HK$';
       }, [ledger]);
 
-      // ---------- Supabase sync ----------
-      // 同步帳本設定：行程名、本國貨幣、匯率（共用）
-      // 不覆寫：myName、travelCurrency（本機入帳預設）
-      // 合併成員名單（去重，保持順序）
       const mergeMembers = (a = [], b = []) => {
         const seen = new Set();
         const out = [];
@@ -604,7 +916,6 @@
       const applyLedgerRow = useCallback((row) => {
         if (!row) return;
         setLedger(prev => {
-          // 若本機尚無 ledger，不要用雲端資料硬建（避免歡迎流程被蓋掉）
           if (!prev || !prev.myName) return prev;
           const nextRates = (row.rates && typeof row.rates === 'object') ? row.rates : (prev.rates || {});
           return {
@@ -613,10 +924,8 @@
             homeCurrency: row.home_currency || prev.homeCurrency || 'HKD',
             rates: nextRates,
             code: FIXED_LEDGER_CODE
-            // travelCurrency、myName 保持本機
           };
         });
-        // 成員與匯率相同：雲端有資料時以雲端為準（新增／刪除可即時同步到其他裝置）
         if (Array.isArray(row.members)) {
           setMembers(row.members);
         }
@@ -633,8 +942,6 @@
         }
       }, [applyLedgerRow]);
 
-      // settings 可含 members（陣列）；有傳就寫入雲端
-      // 若資料庫尚未有 members 欄位，會自動退回只同步名稱／貨幣／匯率，避免整筆失敗
       const pushLedgerSettings = useCallback(async (settings, membersList) => {
         if (!sb || !settings) return false;
         const base = {
@@ -650,7 +957,6 @@
           if (error) throw error;
           return true;
         } catch (e1) {
-          // 可能是 members 欄位不存在 → 不含 members 再試一次
           console.warn('push ledger settings (with members) failed, retry without', e1);
           try {
             const { error } = await sb.from('ledgers').upsert(base);
@@ -663,7 +969,32 @@
         }
       }, []);
 
-      // silent=true 時不顯示「同步中」（給定時輪詢用）
+      const mapTxRow = (r) => ({
+        id: r.id,
+        amount: Number(r.amount),
+        currency: r.currency,
+        category: r.category,
+        payer: r.payer,
+        note: r.note || '',
+        date: r.date,
+        shares: (r.shares && typeof r.shares === 'object') ? r.shares : null,
+        receipt_path: r.receipt_path || null,
+        created_at: r.created_at,
+        updated_at: r.updated_at
+      });
+
+      const mapLoanRow = (r) => ({
+        id: r.id,
+        amount: Number(r.amount),
+        currency: r.currency,
+        from_member: r.from_member,
+        to_member: r.to_member,
+        note: r.note || '',
+        date: r.date,
+        created_at: r.created_at,
+        updated_at: r.updated_at
+      });
+
       const pullFromCloud = useCallback(async (code, silent = false) => {
         if (!sb || !code) return;
         if (!silent) setSyncing(true);
@@ -677,24 +1008,24 @@
             .order('created_at', { ascending: false });
           if (error) throw error;
           if (Array.isArray(data)) {
-            const mapped = data.map(r => ({
-              id: r.id,
-              amount: Number(r.amount),
-              currency: r.currency,
-              category: r.category,
-              payer: r.payer,
-              note: r.note || '',
-              date: r.date,
-              created_at: r.created_at,
-              updated_at: r.updated_at
-            }));
+            const mapped = data.map(mapTxRow);
             setTxs(mapped);
-            // 從交易付款人補齊成員名單（即使雲端尚無 members 欄位也能一致）
             const payers = mapped.map(t => t.payer).filter(Boolean);
-            if (payers.length) {
-              setMembers(prev => mergeMembers(prev, payers));
-            }
+            if (payers.length) setMembers(prev => mergeMembers(prev, payers));
             if (!silent) setStatusText('已同步 ' + data.length + ' 筆（含匯率）');
+          }
+          // loans
+          try {
+            const { data: loanData, error: loanErr } = await sb
+              .from('loans')
+              .select('*')
+              .eq('ledger_code', code)
+              .order('date', { ascending: false });
+            if (!loanErr && Array.isArray(loanData)) {
+              setLoans(loanData.map(mapLoanRow));
+            }
+          } catch (le) {
+            console.warn('pull loans', le);
           }
         } catch (e) {
           console.warn(e);
@@ -702,7 +1033,7 @@
         } finally {
           if (!silent) setSyncing(false);
         }
-      }, [setTxs, pullLedgerSettings]);
+      }, [setTxs, setLoans, pullLedgerSettings]);
 
       const flushPending = useCallback(async () => {
         if (!sb || !ledger?.code || !online || pendingQueue.length === 0) return;
@@ -720,6 +1051,8 @@
                 payer: item.tx.payer,
                 note: item.tx.note || '',
                 date: item.tx.date,
+                shares: item.tx.shares || {},
+                receipt_path: item.tx.receipt_path || null,
                 created_at: item.tx.created_at,
                 updated_at: nowISO()
               });
@@ -727,9 +1060,31 @@
             } else if (item.action === 'delete') {
               const { error } = await sb.from('transactions').delete().eq('id', item.id).eq('ledger_code', ledger.code);
               if (error) throw error;
+            } else if (item.action === 'upsert_loan') {
+              const { error } = await sb.from('loans').upsert({
+                id: item.loan.id,
+                ledger_code: ledger.code,
+                amount: item.loan.amount,
+                currency: item.loan.currency,
+                from_member: item.loan.from_member,
+                to_member: item.loan.to_member,
+                note: item.loan.note || '',
+                date: item.loan.date,
+                created_at: item.loan.created_at,
+                updated_at: nowISO()
+              });
+              if (error) throw error;
+            } else if (item.action === 'delete_loan') {
+              const { error } = await sb.from('loans').delete().eq('id', item.id).eq('ledger_code', ledger.code);
+              if (error) throw error;
             } else if (item.action === 'settings') {
               const ok = await pushLedgerSettings(item.settings, item.members);
               if (!ok) throw new Error('settings push failed');
+            } else if (item.action === 'clear_ledger') {
+              const code = ledger.code;
+              await sb.from('transactions').delete().eq('ledger_code', code);
+              try { await sb.from('loans').delete().eq('ledger_code', code); } catch (_) {}
+              await deleteAllReceipts();
             }
           } catch (e) {
             remaining.push(item);
@@ -743,87 +1098,67 @@
         setSyncing(false);
       }, [sb, ledger, online, pendingQueue, setPendingQueue, pullFromCloud, pushLedgerSettings]);
 
-      // Realtime + 定時輪詢（備援）：確保別人改了資料會自動更新
       useEffect(() => {
         if (!ledger?.code || !sb) return;
         const code = ledger.code;
         let alive = true;
-        let pullTimer = null;
 
         const safePull = (silent = true) => {
           if (!alive || document.hidden) return;
           pullFromCloud(code, silent);
         };
 
-        // 進頁先拉一次（顯示狀態）
         safePull(false);
 
-        // Realtime：不帶 server filter（較穩定），本機再判斷是否同一帳本
-        // 若仍收不到事件，通常是 RLS 擋住 anon SELECT（請跑下方 SQL）
         const channel = sb.channel('ledger-rt-' + code)
-          .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'transactions'
-          }, (payload) => {
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, (payload) => {
             const row = payload.new || payload.old;
             if (!row || row.ledger_code === code) safePull(true);
           })
-          .on('postgres_changes', {
-            event: '*',
-            schema: 'public',
-            table: 'ledgers'
-          }, (payload) => {
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'ledgers' }, (payload) => {
             const row = payload.new || payload.old;
             if (!row || row.code === code) {
               if (payload.new) applyLedgerRow(payload.new);
               else pullLedgerSettings(code);
             }
           })
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'loans' }, (payload) => {
+            const row = payload.new || payload.old;
+            if (!row || row.ledger_code === code) safePull(true);
+          })
           .subscribe((status) => {
             console.info('[Travel Ledger] realtime status:', status);
-            if (status === 'SUBSCRIBED') {
-              setStatusText('即時同步已連線');
-            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            if (status === 'SUBSCRIBED') setStatusText('即時同步已連線');
+            else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
               setStatusText('即時同步未就緒，改用定時更新');
             }
           });
 
-        // 定時輪詢備援（每 5 秒），即使 Realtime 沒開也能自動更新
         const pollId = setInterval(() => safePull(true), 5000);
-
-        // 從背景回到前景時立刻拉一次
-        const onVis = () => {
-          if (!document.hidden) safePull(true);
-        };
+        const onVis = () => { if (!document.hidden) safePull(true); };
         document.addEventListener('visibilitychange', onVis);
 
         return () => {
           alive = false;
           clearInterval(pollId);
-          if (pullTimer) clearTimeout(pullTimer);
           document.removeEventListener('visibilitychange', onVis);
           sb.removeChannel(channel);
         };
       }, [ledger?.code]);
 
-      // flush when back online
       useEffect(() => {
         if (online) flushPending();
       }, [online]);
 
-      // ---------- ledger actions ----------
-      // 免代碼：所有人進入同一個 FIXED_LEDGER_CODE 帳本
       const handleStart = async (myName, tripName, travelCurrency, homeCurrency) => {
         const baseLedger = {
           code: FIXED_LEDGER_CODE,
           tripName: tripName || '家人旅遊',
-          travelCurrency: travelCurrency || 'JPY', // 本機，不同步
-          homeCurrency: homeCurrency || 'HKD',     // 共用
+          travelCurrency: travelCurrency || 'JPY',
+          homeCurrency: homeCurrency || 'HKD',
           rates: {},
           myName
         };
-        // 先寫入本機並關閉歡迎頁，避免 await 期間被舊狀態打回歡迎頁
         setLedger(baseLedger);
         let startMembers = [myName];
         setMembers(prev => {
@@ -833,7 +1168,6 @@
         });
         setIsWelcomeOpen(false);
 
-        // 背景同步雲端設定（失敗也不影響進入）
         try {
           if (sb) {
             const { data } = await sb.from('ledgers').select('*').eq('code', FIXED_LEDGER_CODE).maybeSingle();
@@ -847,11 +1181,9 @@
                 homeCurrency: data.home_currency || (prev && prev.homeCurrency) || baseLedger.homeCurrency,
                 rates: (data.rates && typeof data.rates === 'object') ? data.rates : ((prev && prev.rates) || {})
               }));
-              // 合併雲端成員 + 自己的暱稱
               const cloudMembers = Array.isArray(data.members) ? data.members : [];
               const merged = mergeMembers(cloudMembers, [myName]);
               setMembers(merged);
-              // 若自己是新成員，推回雲端
               if (!cloudMembers.includes(myName)) {
                 await pushLedgerSettings({
                   tripName: data.name || baseLedger.tripName,
@@ -871,7 +1203,6 @@
       };
 
       const handleSaveSettings = async (s, m) => {
-        // 正規化匯率：空值、非數字、≤0 一律改為 1，確保可設為 1 且不會存入無效值
         const rawRates = s.rates || {};
         const cleanRates = {};
         Object.keys(rawRates).forEach(k => {
@@ -879,7 +1210,6 @@
           cleanRates[k] = (isNaN(v) || v <= 0) ? 1 : v;
         });
         const cleanMembers = mergeMembers(m || [], []);
-        // travelCurrency 只留本機；其餘可同步
         const next = {
           ...ledger,
           ...s,
@@ -903,23 +1233,48 @@
         showToast(ok ? '本國貨幣、匯率與成員已同步給家人' : '本機已存，雲端同步失敗', ok ? 'success' : 'error');
       };
 
-      const handleLeave = () => {
-        if (!confirm('確定重設本機暱稱與快取？雲端共用資料仍會保留，其他人不受影響。')) return;
-        setLedger(null);
+      // 清除整個帳本的支出／借款／收據，保留成員、匯率、行程名稱、暱稱
+      const handleClearLedger = async () => {
+        const msg1 = '【第一次確認】\n將刪除本帳本「所有支出與私人借款」，並刪除雲端收據照片。\n成員名單、匯率、行程名稱會保留。\n\n確定要繼續？';
+        if (!confirm(msg1)) return;
+        const msg2 = '【第二次確認 · 無法復原】\n真的要清除所有項目與收據嗎？請再按一次確定。';
+        if (!confirm(msg2)) return;
+
+        const code = ledger?.code || FIXED_LEDGER_CODE;
+        // 本機先清空
         setTxs([]);
-        setMembers([]);
+        setLoans([]);
         setPendingQueue([]);
-        setIsWelcomeOpen(true);
+        setIsSettingsOpen(false);
+
+        if (sb && online) {
+          setSyncing(true);
+          try {
+            // 刪雲端交易
+            await sb.from('transactions').delete().eq('ledger_code', code);
+            // 刪雲端借款
+            try { await sb.from('loans').delete().eq('ledger_code', code); } catch (e) { console.warn(e); }
+            // 刪 Storage 收據
+            await deleteAllReceipts();
+            showToast('已清除所有帳目與收據');
+          } catch (e) {
+            console.warn('clear ledger cloud', e);
+            showToast('本機已清除，雲端部分可能未完成', 'error');
+          }
+          setSyncing(false);
+        } else {
+          // 離線：排程刪除
+          setPendingQueue([{ action: 'clear_ledger' }]);
+          showToast('本機已清除；有網後會同步刪除雲端資料');
+        }
       };
 
       const saveTx = async (tx) => {
-        // optimistic local update
         setTxs(prev => {
           const exists = prev.find(t => t.id === tx.id);
           if (exists) return prev.map(t => t.id === tx.id ? tx : t);
           return [tx, ...prev];
         });
-        // 新付款人加入成員名單並同步
         let nextMembers = members;
         if (tx.payer && !members.includes(tx.payer)) {
           nextMembers = mergeMembers(members, [tx.payer]);
@@ -929,7 +1284,6 @@
         if (!online || !sb || !ledger?.code) {
           setPendingQueue(prev => {
             const q = [...prev.filter(p => !(p.action === 'upsert' && p.tx.id === tx.id)), { action: 'upsert', tx }];
-            // 若有新成員，一併排程同步成員
             if (nextMembers !== members) {
               return [
                 ...q.filter(p => p.action !== 'settings'),
@@ -950,11 +1304,12 @@
               payer: tx.payer,
               note: tx.note || '',
               date: tx.date,
+              shares: tx.shares || {},
+              receipt_path: tx.receipt_path || null,
               created_at: tx.created_at,
               updated_at: nowISO()
             });
             if (error) throw error;
-            // 新成員一併寫入雲端
             if (nextMembers !== members) {
               await pushLedgerSettings(ledger, nextMembers);
             }
@@ -983,8 +1338,63 @@
         }
       };
 
+      const saveLoan = async (loan) => {
+        setLoans(prev => {
+          const exists = prev.find(l => l.id === loan.id);
+          if (exists) return prev.map(l => l.id === loan.id ? loan : l);
+          return [loan, ...prev];
+        });
+        // 確保成員名單有這兩人
+        const extra = [loan.from_member, loan.to_member].filter(Boolean);
+        if (extra.length) setMembers(prev => mergeMembers(prev, extra));
+
+        if (!online || !sb || !ledger?.code) {
+          setPendingQueue(prev => [
+            ...prev.filter(p => !(p.action === 'upsert_loan' && p.loan.id === loan.id)),
+            { action: 'upsert_loan', loan }
+          ]);
+          showToast(online ? '借款已儲存（待同步）' : '已離線暫存');
+        } else {
+          try {
+            const { error } = await sb.from('loans').upsert({
+              id: loan.id,
+              ledger_code: ledger.code,
+              amount: loan.amount,
+              currency: loan.currency,
+              from_member: loan.from_member,
+              to_member: loan.to_member,
+              note: loan.note || '',
+              date: loan.date,
+              created_at: loan.created_at,
+              updated_at: nowISO()
+            });
+            if (error) throw error;
+            showToast('借款已儲存並同步');
+          } catch (e) {
+            setPendingQueue(prev => [...prev, { action: 'upsert_loan', loan }]);
+            showToast('已暫存，稍後再同步', 'error');
+          }
+        }
+        setIsLoanFormOpen(false);
+        setEditingLoan(null);
+      };
+
+      const deleteLoan = async (id) => {
+        if (!confirm('確定刪除此筆私人借款？')) return;
+        setLoans(prev => prev.filter(l => l.id !== id));
+        if (!online || !sb || !ledger?.code) {
+          setPendingQueue(prev => [...prev, { action: 'delete_loan', id }]);
+        } else {
+          try {
+            await sb.from('loans').delete().eq('id', id).eq('ledger_code', ledger.code);
+            showToast('已刪除');
+          } catch {
+            setPendingQueue(prev => [...prev, { action: 'delete_loan', id }]);
+          }
+        }
+      };
+
       // ---------- derived ----------
-      // 最新在前：先比交易日 (date) 降序，同日再比入帳時間 (created_at) 降序
       const filtered = useMemo(() => {
         const list = filterCat === 'all' ? [...txs] : txs.filter(t => t.category === filterCat);
         return list.sort((a, b) => {
@@ -1017,20 +1427,133 @@
         return m;
       }, [txs, convert]);
 
-      // simple settlement: each person should pay total/n, net = paid - should
+      /**
+       * 結算（含參與比例 + 私人借款）
+       * paid[P]  = 實際代付總額
+       * fair[P]  = 依 shares 應分攤總額
+       * loanAdj  = 借款調整（借款人 −、出借人 +）
+       * net[P]   = paid - fair + loanAdj  （>0 應收，<0 應付）
+       * tableRows: 供「計算過程」表格用（成員為欄、項目為列）
+       */
       const settlement = useMemo(() => {
-        const people = [...new Set([...members, ...Object.keys(byPayer)])];
-        if (people.length === 0) return [];
-        const total = totalHome;
-        const fair = total / people.length;
-        const nets = people.map(p => ({
-          name: p,
-          paid: byPayer[p] || 0,
-          fair,
-          net: (byPayer[p] || 0) - fair
-        })).sort((a, b) => a.net - b.net);
+        const peopleSet = new Set([
+          ...members,
+          ...Object.keys(byPayer),
+          ...loans.flatMap(l => [l.from_member, l.to_member])
+        ]);
+        const people = [...peopleSet].filter(Boolean);
+        if (people.length === 0) {
+          return { nets: [], transfers: [], tableRows: [], people: [], total: 0 };
+        }
 
-        // generate transfers: debtors pay creditors
+        const paid = {};
+        const fair = {};
+        const loanAdj = {};
+        people.forEach(p => { paid[p] = 0; fair[p] = 0; loanAdj[p] = 0; });
+
+        const tableRows = []; // { label, cells: { [name]: number }, kind, note? }
+
+        // 依日期升序顯示計算過程（由舊到新）
+        const txsAsc = [...txs].sort((a, b) => {
+          const da = a.date || '';
+          const db = b.date || '';
+          if (da !== db) return da.localeCompare(db);
+          return (a.created_at || '').localeCompare(b.created_at || '');
+        });
+
+        txsAsc.forEach((t, idx) => {
+          const amtHome = convert(t.amount, t.currency);
+          paid[t.payer] = (paid[t.payer] || 0) + amtHome;
+
+          let shares = t.shares && typeof t.shares === 'object' && Object.keys(t.shares).length
+            ? (() => {
+                const o = {};
+                people.forEach(m => {
+                  const v = parseFloat(t.shares[m]);
+                  // 缺省視為 100（與表單預設一致）；明確 0 則 0
+                  o[m] = (t.shares[m] === undefined || t.shares[m] === null || t.shares[m] === '')
+                    ? 100
+                    : (isNaN(v) || v < 0 ? 0 : Math.min(100, v));
+                });
+                return o;
+              })()
+            : defaultShares(people);
+
+          const active = Object.entries(shares).filter(([, v]) => v > 0);
+          const sumShare = active.reduce((s, [, v]) => s + v, 0);
+          const cells = {};
+          people.forEach(p => { cells[p] = 0; });
+
+          if (sumShare <= 0) {
+            const n = people.length || 1;
+            people.forEach(p => {
+              const shareAmt = amtHome / n;
+              fair[p] = (fair[p] || 0) + shareAmt;
+              cells[p] = shareAmt;
+            });
+          } else {
+            active.forEach(([name, pct]) => {
+              const shareAmt = amtHome * (pct / sumShare);
+              fair[name] = (fair[name] || 0) + shareAmt;
+              cells[name] = shareAmt;
+            });
+          }
+
+          const noteBits = [];
+          if (t.note) noteBits.push(t.note);
+          noteBits.push(`付：${t.payer}`);
+          const zeroPeople = people.filter(p => !(shares[p] > 0));
+          if (zeroPeople.length) noteBits.push(`未參與：${zeroPeople.join('、')}`);
+
+          tableRows.push({
+            kind: 'tx',
+            label: `${t.date || ''} ${t.category}`,
+            sub: noteBits.join(' · '),
+            amount: amtHome,
+            cells
+          });
+        });
+
+        // 借款列（對淨額的調整，不是應分攤）
+        loans.forEach(l => {
+          const amtHome = convert(l.amount, l.currency);
+          loanAdj[l.from_member] = (loanAdj[l.from_member] || 0) - amtHome;
+          loanAdj[l.to_member] = (loanAdj[l.to_member] || 0) + amtHome;
+          const cells = {};
+          people.forEach(p => { cells[p] = 0; });
+          cells[l.from_member] = -amtHome;
+          cells[l.to_member] = amtHome;
+          tableRows.push({
+            kind: 'loan',
+            label: `借款 ${l.from_member}→${l.to_member}`,
+            sub: l.note || l.date || '',
+            amount: amtHome,
+            cells
+          });
+        });
+
+        const nets = people.map(p => {
+          const pPaid = paid[p] || 0;
+          const pFair = fair[p] || 0;
+          const pLoan = loanAdj[p] || 0;
+          const net = pPaid - pFair + pLoan;
+          return { name: p, paid: pPaid, fair: pFair, loanAdj: pLoan, net };
+        }).sort((a, b) => a.net - b.net);
+
+        // 摘要列
+        const paidCells = {}, fairCells = {}, loanCells = {}, netCells = {};
+        people.forEach(p => {
+          paidCells[p] = paid[p] || 0;
+          fairCells[p] = fair[p] || 0;
+          loanCells[p] = loanAdj[p] || 0;
+          netCells[p] = (paid[p] || 0) - (fair[p] || 0) + (loanAdj[p] || 0);
+        });
+        tableRows.push({ kind: 'sum', label: '已付合計', cells: paidCells });
+        tableRows.push({ kind: 'sum', label: '應分攤合計', cells: fairCells });
+        if (loans.length) tableRows.push({ kind: 'sum', label: '借款調整', cells: loanCells });
+        tableRows.push({ kind: 'net', label: '淨額（應收+/應付−）', cells: netCells });
+
+        // transfers
         const debtors = nets.filter(n => n.net < -0.01).map(n => ({ ...n }));
         const creditors = nets.filter(n => n.net > 0.01).map(n => ({ ...n }));
         const transfers = [];
@@ -1047,16 +1570,16 @@
           if (Math.abs(d.net) < 0.01) i++;
           if (Math.abs(c.net) < 0.01) j++;
         }
-        return { nets, transfers, fair, total };
-      }, [members, byPayer, totalHome]);
+
+        return { nets, transfers, tableRows, people, total: totalHome, paid, fair, loanAdj };
+      }, [members, byPayer, txs, loans, convert, homeSymbol, totalHome]);
 
       // ---------- render ----------
-      // 只有尚未設定暱稱時才顯示歡迎頁（避免同步過程把人打回去）
       if (!ledger?.myName || isWelcomeOpen) {
         return (
           <div className="min-h-screen flex flex-col items-center justify-center p-6 safe-header">
             <div className="text-5xl mb-4">✈️</div>
-            <h1 className="text-2xl font-bold mb-2">旅遊記帳</h1>
+            <h1 className="text-2xl font-bold mb-2">旅遊本本</h1>
             <p className="text-zinc-500 text-center text-sm mb-8 max-w-xs">
               全家人打開同一個網址即可即時同步記帳，不必輸入代碼。支援離線暫存。
             </p>
@@ -1068,7 +1591,6 @@
 
       return (
         <div className="min-h-screen pb-28">
-          {/* Header */}
           <header className="safe-header sticky top-0 z-30 bg-zinc-50/90 dark:bg-zinc-950/90 backdrop-blur border-b border-zinc-200 dark:border-zinc-800">
             <div className="max-w-lg mx-auto px-4 py-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -1099,12 +1621,12 @@
                 </button>
               </div>
             </div>
-            {/* tabs */}
             <div className="max-w-lg mx-auto px-4 flex gap-1 pb-2">
               {[
                 { key: 'list', label: '明細' },
                 { key: 'stats', label: '統計' },
                 { key: 'settle', label: '結算' },
+                { key: 'loans', label: '借款' },
               ].map(t => (
                 <button key={t.key} onClick={() => setTab(t.key)}
                   className={`flex-1 py-1.5 text-sm font-medium rounded-lg transition-colors ${tab === t.key ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}>
@@ -1117,11 +1639,10 @@
           <main className="max-w-lg mx-auto px-4 pt-4"
             onTouchStart={onTouchStart}
             onTouchEnd={onTouchEnd}>
-            {/* summary card */}
             <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 mb-4 shadow-sm">
               <div className="text-xs text-zinc-500 mb-1">本趟總花費（已換算）</div>
               <div className="text-2xl font-bold font-mono tracking-tight">{formatMoney(totalHome, homeSymbol)}</div>
-              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {members.length || Object.keys(byPayer).length} 人</div>
+              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {members.length || Object.keys(byPayer).length} 人{loans.length > 0 ? ` · ${loans.length} 筆借款` : ''}</div>
             </div>
 
             {tab === 'list' && (
@@ -1143,6 +1664,10 @@
                   <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800 overflow-hidden">
                     {filtered.map(tx => {
                       const cur = CURRENCIES.find(c => c.key === tx.currency);
+                      const shares = tx.shares && typeof tx.shares === 'object' ? tx.shares : null;
+                      const activeShares = shares ? Object.entries(shares).filter(([, v]) => v > 0) : null;
+                      const hasPartial = activeShares && members.length > 0 && activeShares.length < members.length;
+                      const rUrl = receiptPublicUrl(tx.receipt_path);
                       return (
                         <div key={tx.id} className="px-3.5 py-3 flex items-center gap-3 group">
                           <div className="w-9 h-9 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 flex items-center justify-center text-base shrink-0">−</div>
@@ -1150,10 +1675,19 @@
                             <div className="flex items-center gap-1.5 min-w-0">
                               <span className="font-semibold text-sm truncate">{tx.category}</span>
                               {tx.note && <span className="text-xs text-zinc-400 truncate">· {tx.note}</span>}
+                              {rUrl && (
+                                <button type="button" onClick={() => setPreviewReceipt(rUrl)}
+                                  className="text-sky-500 shrink-0" title="查看收據"><Icons.Receipt /></button>
+                              )}
                             </div>
-                            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-zinc-400 min-w-0">
+                            <div className="flex items-center gap-1.5 mt-0.5 text-[11px] text-zinc-400 min-w-0 flex-wrap">
                               <span className="shrink-0">{tx.date}</span>
                               <span className="px-1.5 py-0.5 rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-500 truncate max-w-[6rem]">{tx.payer}</span>
+                              {hasPartial && (
+                                <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                                  參與：{activeShares.map(([n, p]) => `${n}${p < 100 ? p + '%' : ''}`).join('、')}
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="text-right shrink-0">
@@ -1188,15 +1722,22 @@
             {tab === 'settle' && (
               <div className="space-y-4">
                 <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
-                  <h3 className="text-sm font-semibold mb-3">每人應分攤</h3>
-                  <p className="text-xs text-zinc-500 mb-3">總額 {formatMoney(settlement.total, homeSymbol)} ÷ {settlement.nets?.length || 0} 人 = {formatMoney(settlement.fair || 0, homeSymbol)}</p>
+                  <h3 className="text-sm font-semibold mb-3">每人淨額</h3>
+                  <p className="text-xs text-zinc-500 mb-3">
+                    共同支出總額 {formatMoney(settlement.total, homeSymbol)}
+                    {loans.length > 0 && ` · 含 ${loans.length} 筆私人借款`}
+                    （已依參與比例分攤）
+                  </p>
                   <div className="space-y-2">
                     {(settlement.nets || []).map(n => (
                       <div key={n.name} className="flex items-center justify-between text-sm">
                         <span className="font-medium">{n.name}</span>
                         <div className="text-right">
-                          <div className="font-mono">已付 {formatMoney(n.paid, homeSymbol)}</div>
-                          <div className={`text-xs ${n.net >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
+                          <div className="font-mono text-xs text-zinc-500">
+                            已付 {formatMoney(n.paid, homeSymbol)} · 應分攤 {formatMoney(n.fair, homeSymbol)}
+                            {Math.abs(n.loanAdj) > 0.01 && ` · 借款 ${formatMoney(n.loanAdj, homeSymbol)}`}
+                          </div>
+                          <div className={`text-sm font-semibold ${n.net >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                             {n.net >= 0 ? '應收 ' : '應付 '}{formatMoney(Math.abs(n.net), homeSymbol)}
                           </div>
                         </div>
@@ -1204,6 +1745,7 @@
                     ))}
                   </div>
                 </div>
+
                 <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
                   <h3 className="text-sm font-semibold mb-3">建議轉帳</h3>
                   {(settlement.transfers || []).length === 0 ? (
@@ -1221,6 +1763,116 @@
                     </div>
                   )}
                 </div>
+
+                {/* 計算過程表格（預設隱藏） */}
+                <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 overflow-hidden">
+                  <button type="button" onClick={() => setShowSettleSteps(s => !s)}
+                    className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800/50">
+                    <span>查看結算計算過程</span>
+                    <Icons.Chevron open={showSettleSteps} />
+                  </button>
+                  {showSettleSteps && (
+                    <div className="border-t border-zinc-100 dark:border-zinc-800 overflow-x-auto">
+                      {(settlement.people || []).length === 0 ? (
+                        <p className="px-4 py-6 text-center text-xs text-zinc-400">尚無資料</p>
+                      ) : (
+                        <table className="w-full text-xs border-collapse min-w-[280px]">
+                          <thead>
+                            <tr className="bg-amber-50/80 dark:bg-zinc-800/80">
+                              <th className="text-left font-medium text-zinc-500 px-3 py-2.5 sticky left-0 bg-amber-50/80 dark:bg-zinc-800/80 border-b border-zinc-200 dark:border-zinc-700">項目</th>
+                              {(settlement.people || []).map(p => (
+                                <th key={p} className="text-right font-semibold text-zinc-700 dark:text-zinc-200 px-3 py-2.5 border-b border-zinc-200 dark:border-zinc-700 whitespace-nowrap">{p}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(settlement.tableRows || []).map((row, i) => {
+                              const isSum = row.kind === 'sum' || row.kind === 'net';
+                              const isNet = row.kind === 'net';
+                              const isLoan = row.kind === 'loan';
+                              return (
+                                <tr key={i} className={
+                                  isNet ? 'bg-zinc-100 dark:bg-zinc-800 font-semibold' :
+                                  isSum ? 'bg-zinc-50 dark:bg-zinc-900/60' :
+                                  isLoan ? 'bg-amber-50/40 dark:bg-amber-950/20' : ''
+                                }>
+                                  <td className={`px-3 py-2 sticky left-0 border-b border-zinc-100 dark:border-zinc-800 ${isNet ? 'bg-zinc-100 dark:bg-zinc-800' : isSum ? 'bg-zinc-50 dark:bg-zinc-900/60' : isLoan ? 'bg-amber-50/40 dark:bg-amber-950/20' : 'bg-white dark:bg-zinc-900'}`}>
+                                    <div className="font-medium text-zinc-700 dark:text-zinc-200 whitespace-nowrap">{row.label}</div>
+                                    {row.sub && <div className="text-[10px] text-zinc-400 mt-0.5 max-w-[9rem] truncate">{row.sub}</div>}
+                                  </td>
+                                  {(settlement.people || []).map(p => {
+                                    const v = (row.cells && row.cells[p]) || 0;
+                                    const empty = Math.abs(v) < 0.005;
+                                    let color = 'text-zinc-700 dark:text-zinc-300';
+                                    if (isNet) color = v > 0.01 ? 'text-emerald-600' : v < -0.01 ? 'text-red-500' : 'text-zinc-500';
+                                    else if (isLoan && !empty) color = v > 0 ? 'text-emerald-600' : 'text-red-500';
+                                    return (
+                                      <td key={p} className={`px-3 py-2 text-right font-mono border-b border-zinc-100 dark:border-zinc-800 whitespace-nowrap ${color}`}>
+                                        {empty ? '—' : (v > 0 && isNet ? '+' : '') + formatMoney(v, homeSymbol).replace(homeSymbol + ' ', '')}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      )}
+                      <p className="px-3 py-2 text-[10px] text-zinc-400 border-t border-zinc-100 dark:border-zinc-800">
+                        支出列＝該人應分攤金額 · 借款列＝淨額調整（借出＋／借入−）· 淨額＝已付 − 應分攤 ＋ 借款調整
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {tab === 'loans' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-zinc-500">成員之間的私人借款，會併入結算淨額。</p>
+                  <button type="button" onClick={() => { setEditingLoan(null); setIsLoanFormOpen(true); }}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 font-medium">
+                    + 新增借款
+                  </button>
+                </div>
+                {loans.length === 0 ? (
+                  <div className="py-12 text-center text-zinc-400 text-sm">尚無私人借款</div>
+                ) : (
+                  <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 divide-y divide-zinc-100 dark:divide-zinc-800 overflow-hidden">
+                    {loans.map(l => {
+                      const cur = CURRENCIES.find(c => c.key === l.currency);
+                      return (
+                        <div key={l.id} className="px-3.5 py-3 flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                            <Icons.Loan />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium">
+                              <span className="text-red-500">{l.from_member}</span>
+                              <span className="text-zinc-400 mx-1">向</span>
+                              <span className="text-emerald-600">{l.to_member}</span>
+                              <span className="text-zinc-400 ml-1">借</span>
+                            </div>
+                            <div className="text-[11px] text-zinc-400 mt-0.5">
+                              {l.date}{l.note ? ` · ${l.note}` : ''}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="font-mono font-semibold text-sm">{formatMoney(l.amount, cur?.symbol || '')}</div>
+                            {l.currency !== ledger.homeCurrency && (
+                              <div className="text-[10px] text-zinc-400">≈ {formatMoney(convert(l.amount, l.currency), homeSymbol)}</div>
+                            )}
+                          </div>
+                          <div className="flex flex-col shrink-0">
+                            <button onClick={() => { setEditingLoan(l); setIsLoanFormOpen(true); }} className="p-1 text-zinc-400 hover:text-zinc-900" aria-label="編輯"><Icons.Edit /></button>
+                            <button onClick={() => deleteLoan(l.id)} className="p-1 text-zinc-400 hover:text-red-600" aria-label="刪除"><Icons.Trash /></button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1229,30 +1881,50 @@
             </p>
           </main>
 
-          {/* FAB */}
-          <button onClick={() => { setEditingTx(null); setIsFormOpen(true); }}
-            className="safe-bottom-fab fixed right-6 md:right-8 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 p-4 rounded-full shadow-lg hover:scale-105 active:scale-95 transition-transform z-40"
-            title="新增支出" aria-label="新增支出">
-            <Icons.Plus />
-          </button>
+          {/* FAB：明細頁新增支出；借款頁新增借款 */}
+          {tab !== 'loans' ? (
+            <button onClick={() => { setEditingTx(null); setIsFormOpen(true); }}
+              className="safe-bottom-fab fixed right-6 md:right-8 bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 p-4 rounded-full shadow-lg hover:scale-105 active:scale-95 transition-transform z-40"
+              title="新增支出" aria-label="新增支出">
+              <Icons.Plus />
+            </button>
+          ) : (
+            <button onClick={() => { setEditingLoan(null); setIsLoanFormOpen(true); }}
+              className="safe-bottom-fab fixed right-6 md:right-8 bg-amber-500 text-white p-4 rounded-full shadow-lg hover:scale-105 active:scale-95 transition-transform z-40"
+              title="新增借款" aria-label="新增借款">
+              <Icons.Plus />
+            </button>
+          )}
 
           {isFormOpen && (
             <TxForm initial={editingTx} members={members.length ? members : [ledger.myName]}
               travelCurrency={ledger.travelCurrency || 'JPY'}
               onSave={saveTx} onClose={() => { setIsFormOpen(false); setEditingTx(null); }} />
           )}
+          {isLoanFormOpen && (
+            <LoanForm initial={editingLoan} members={members.length ? members : [ledger.myName]}
+              travelCurrency={ledger.travelCurrency || 'JPY'}
+              onSave={saveLoan} onClose={() => { setIsLoanFormOpen(false); setEditingLoan(null); }} />
+          )}
           {isSettingsOpen && (
             <SettingsModal settings={ledger} members={members}
               onSave={handleSaveSettings}
               onClose={() => setIsSettingsOpen(false)}
-              onLeave={handleLeave} />
+              onLeave={handleClearLedger} />
+          )}
+          {previewReceipt && (
+            <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4"
+              onClick={() => setPreviewReceipt(null)}>
+              <img src={previewReceipt} alt="收據" className="max-w-full max-h-full object-contain rounded-lg" onClick={e => e.stopPropagation()} />
+              <button type="button" onClick={() => setPreviewReceipt(null)}
+                className="absolute top-6 right-6 text-white bg-black/50 px-3 py-1.5 rounded-lg text-sm">關閉</button>
+            </div>
           )}
           {toast && <Toast {...toast} onClose={() => setToast(null)} />}
         </div>
       );
     }
 
-    // PWA SW registration
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('./sw.js', { scope: './' })
