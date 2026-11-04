@@ -233,25 +233,41 @@
       img.src = url;
     });
 
-    const uploadReceipt = async (file, txId) => {
+    const uploadReceipt = async (file, txId, oldPath = null) => {
       if (!sb || !file) return null;
       const compressed = await compressImage(file);
-      const path = `${FIXED_LEDGER_CODE}/${txId}.jpg`;
+      // 每次用唯一路徑，避免瀏覽器／CDN 快取舊圖
+      const path = `${FIXED_LEDGER_CODE}/${txId}_${Date.now()}.jpg`;
       const { error } = await sb.storage.from(RECEIPT_BUCKET).upload(path, compressed, {
-        upsert: true,
-        contentType: 'image/jpeg'
+        upsert: false,
+        contentType: 'image/jpeg',
+        cacheControl: '3600'
       });
       if (error) throw error;
+      // 刪除舊檔（忽略失敗）
+      if (oldPath && oldPath !== path && !oldPath.startsWith('http')) {
+        try { await sb.storage.from(RECEIPT_BUCKET).remove([oldPath]); } catch (_) {}
+      }
       const { data } = sb.storage.from(RECEIPT_BUCKET).getPublicUrl(path);
-      return { path, url: data?.publicUrl || null };
+      const url = data?.publicUrl || null;
+      return { path, url: url ? `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}` : null };
     };
 
-    const receiptPublicUrl = (path) => {
+    /** path + 可選 cache-bust（用 updated_at 或時間戳） */
+    const receiptPublicUrl = (path, bust = null) => {
       if (!path) return null;
-      if (path.startsWith('http')) return path;
-      if (!sb) return null;
-      const { data } = sb.storage.from(RECEIPT_BUCKET).getPublicUrl(path);
-      return data?.publicUrl || null;
+      let url = path;
+      if (!path.startsWith('http')) {
+        if (!sb) return null;
+        const { data } = sb.storage.from(RECEIPT_BUCKET).getPublicUrl(path);
+        url = data?.publicUrl || null;
+      }
+      if (!url) return null;
+      if (bust) {
+        const v = encodeURIComponent(String(bust));
+        url = `${url}${url.includes('?') ? '&' : '?'}v=${v}`;
+      }
+      return url;
     };
 
     /** 刪除帳本下所有收據（清除帳目時用） */
@@ -288,7 +304,7 @@
             if (!isNaN(v) && v >= 0) shares[m] = Math.min(100, v);
           });
         }
-        return { ...base, shares, receiptFile: null, receiptPreview: receiptPublicUrl(base.receipt_path) };
+        return { ...base, shares, receiptFile: null, receiptPreview: receiptPublicUrl(base.receipt_path, base.updated_at || Date.now()) };
       });
       const amountRef = useRef(null);
       const [uploading, setUploading] = useState(false);
@@ -341,7 +357,7 @@
         if (form.receiptFile && sb) {
           setUploading(true);
           try {
-            const up = await uploadReceipt(form.receiptFile, txId);
+            const up = await uploadReceipt(form.receiptFile, txId, form.receipt_path || initial?.receipt_path || null);
             receipt_path = up?.path || null;
           } catch (err) {
             console.warn('receipt upload', err);
@@ -1667,7 +1683,7 @@
                       const shares = tx.shares && typeof tx.shares === 'object' ? tx.shares : null;
                       const activeShares = shares ? Object.entries(shares).filter(([, v]) => v > 0) : null;
                       const hasPartial = activeShares && members.length > 0 && activeShares.length < members.length;
-                      const rUrl = receiptPublicUrl(tx.receipt_path);
+                      const rUrl = receiptPublicUrl(tx.receipt_path, tx.updated_at || tx.created_at || tx.id);
                       return (
                         <div key={tx.id} className="px-3.5 py-3 flex items-center gap-3 group">
                           <div className="w-9 h-9 rounded-full bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 flex items-center justify-center text-base shrink-0">−</div>
@@ -1915,9 +1931,16 @@
           {previewReceipt && (
             <div className="fixed inset-0 z-[70] bg-black/80 flex items-center justify-center p-4"
               onClick={() => setPreviewReceipt(null)}>
-              <img src={previewReceipt} alt="收據" className="max-w-full max-h-full object-contain rounded-lg" onClick={e => e.stopPropagation()} />
-              <button type="button" onClick={() => setPreviewReceipt(null)}
-                className="absolute top-6 right-6 text-white bg-black/50 px-3 py-1.5 rounded-lg text-sm">關閉</button>
+              <div className="relative max-w-full max-h-[85vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
+                <img src={previewReceipt} alt="收據" className="max-w-full max-h-[80vh] object-contain rounded-lg" />
+                <button type="button" onClick={() => setPreviewReceipt(null)}
+                  className="mt-3 text-white bg-black/70 hover:bg-black/90 px-5 py-2 rounded-full text-sm font-medium shadow-lg">
+                  關閉
+                </button>
+                <button type="button" onClick={() => setPreviewReceipt(null)}
+                  className="absolute -top-2 -right-2 w-9 h-9 rounded-full bg-black/70 text-white text-lg leading-none flex items-center justify-center shadow"
+                  aria-label="關閉">×</button>
+              </div>
             </div>
           )}
           {toast && <Toast {...toast} onClose={() => setToast(null)} />}
