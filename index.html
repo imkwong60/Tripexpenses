@@ -763,16 +763,16 @@
                     const rateVal = (local.rates || {})[key];
                     const display = rateVal === undefined || rateVal === null ? '' : rateVal;
                     return (
-                      <div key={key} className="flex items-center gap-2">
-                        <span className="text-sm text-zinc-600 dark:text-zinc-300 shrink-0 w-28">
+                      <div key={key} className="flex items-center gap-1.5">
+                        <span className="text-sm text-zinc-600 dark:text-zinc-300 shrink-0 whitespace-nowrap">
                           1 {c?.label || key} =
                         </span>
                         <input type="number" step="any" min="0" inputMode="decimal"
                           value={display}
                           onChange={e => setRate(key, e.target.value, false)}
                           onBlur={e => setRate(key, e.target.value, true)}
-                          className="flex-1 px-2 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
-                        <span className="text-sm text-zinc-500 shrink-0">{homeLabel}</span>
+                          className="w-24 min-w-0 px-2 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                        <span className="text-sm text-zinc-500 shrink-0 whitespace-nowrap">{homeLabel}</span>
                       </div>
                     );
                   };
@@ -2076,7 +2076,7 @@
             )}
 
             <p className="text-center text-xs text-zinc-400 pt-6 pb-2">
-              資料存於本機 + 雲端 · {statusText || (online ? '就緒' : '離線模式')}
+              資料存於本機 + Supabase · {statusText || (online ? '就緒' : '離線模式')}
             </p>
           </main>
 
