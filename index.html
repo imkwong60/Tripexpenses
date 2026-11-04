@@ -552,7 +552,8 @@
         <Modal onClose={onClose}>
           <form onSubmit={submit} className="p-6">
             <h2 className="text-xl font-bold mb-1">{initial ? '編輯私人借款' : '新增私人借款'}</h2>
-            <p className="text-xs text-zinc-500 mb-5">例如：A 向 C 借了 200 → 借款人 A、出借人 C。結算時會一併計算。</p>
+            <p className="text-xs text-zinc-500 mb-2">例如：A 向 C 借了 200 → 借款人 A、出借人 C。結算時會一併計算。</p>
+            <p className="text-[11px] text-amber-600 dark:text-amber-400 mb-5">如果借款人或出借人不是成員之一，只會當普通記錄，不會入結算。</p>
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">金額</label>
@@ -1759,12 +1760,17 @@
                     {filtered.map(tx => {
                       const cur = CURRENCIES.find(c => c.key === tx.currency);
                       const shares = tx.shares && typeof tx.shares === 'object' ? tx.shares : null;
-                      // 只顯示未參與者（比例為 0）；全員有參與則不顯示
-                      const nonParticipants = shares
-                        ? Object.entries(shares)
-                            .filter(([n, v]) => Number(v) === 0 && members.includes(n))
-                            .map(([n]) => n)
-                        : [];
+                      // 0% → 未參與；0 < x < 100 → 顯示參與 x%；100% 不顯示
+                      const nonParticipants = [];
+                      const partialParticipants = [];
+                      if (shares) {
+                        Object.entries(shares).forEach(([n, v]) => {
+                          if (!members.includes(n)) return;
+                          const pct = Number(v);
+                          if (pct === 0) nonParticipants.push(n);
+                          else if (pct > 0 && pct < 100) partialParticipants.push({ name: n, pct });
+                        });
+                      }
                       const rUrl = receiptPublicUrl(tx.receipt_path, tx.updated_at || tx.created_at || tx.id);
                       return (
                         <div key={tx.id} className="px-3.5 py-3 flex items-center gap-3 group">
@@ -1783,6 +1789,11 @@
                               {nonParticipants.length > 0 && (
                                 <span className="text-[10px] text-zinc-400">
                                   未參與：{nonParticipants.join('、')}
+                                </span>
+                              )}
+                              {partialParticipants.length > 0 && (
+                                <span className="text-[10px] text-sky-600 dark:text-sky-400">
+                                  參與：{partialParticipants.map(p => `${p.name} ${p.pct}%`).join('、')}
                                 </span>
                               )}
                             </div>
@@ -1932,7 +1943,10 @@
             {tab === 'loans' && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <p className="text-xs text-zinc-500">成員之間的私人借款，會併入結算淨額。</p>
+                  <p className="text-xs text-zinc-500 leading-relaxed">
+                    成員之間的私人借款，會併入結算淨額。<br/>
+                    <span className="text-amber-600 dark:text-amber-400">如果借款人或出借人不是成員之一，只會當普通記錄，不會入結算。</span>
+                  </p>
                   <button type="button" onClick={() => { setEditingLoan(null); setIsLoanFormOpen(true); }}
                     className="text-xs px-3 py-1.5 rounded-lg bg-zinc-900 dark:bg-white text-white dark:text-zinc-900 font-medium">
                     + 新增借款
