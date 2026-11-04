@@ -388,6 +388,11 @@
             <h2 className="text-xl font-bold mb-5">{initial ? '編輯支出' : '新增支出'}</h2>
             <div className="space-y-4">
               <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">日期</label>
+                <input type="date" required value={form.date} onChange={e => setForm({...form, date: e.target.value})}
+                  className="w-full h-11 px-3 text-sm leading-none border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 appearance-none" />
+              </div>
+              <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">金額</label>
                 <div className="flex gap-2">
                   <select value={form.currency} onChange={e => setForm({...form, currency: e.target.value})}
@@ -399,6 +404,12 @@
                     className="flex-1 px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 font-mono focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-white" />
                 </div>
                 <p className="text-[11px] text-zinc-400 mt-1">預設為旅遊貨幣，可臨時改成其他幣別</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">備註（選填）</label>
+                <input type="text" placeholder="例如：午餐、地鐵票…" value={form.note}
+                  onChange={e => setForm({...form, note: e.target.value})}
+                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">類別</label>
@@ -426,57 +437,40 @@
                   className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 focus:outline-none focus:ring-2 focus:ring-zinc-900 dark:focus:ring-white" />
               </div>
 
-              {/* 參與比例 */}
+              {/* 參與比例：藥丸 0/50/100 + 手動輸入，預設 100% */}
               <div>
                 <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">
                   成員參與比例
                 </label>
-                <p className="text-[11px] text-zinc-400 mb-2">預設 100%。設為 0% 表示未參與，結算時不計算該人。</p>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {memberList.map(m => (
-                    <div key={m} className="flex items-center gap-2">
-                      <span className="w-16 text-sm truncate shrink-0">{m}</span>
-                      <input type="range" min="0" max="100" step="1"
-                        value={form.shares?.[m] ?? 100}
-                        onChange={e => setShare(m, parseInt(e.target.value, 10))}
-                        className="flex-1 accent-zinc-900 dark:accent-white" />
-                      <input type="number" min="0" max="100" step="1"
-                        value={form.shares?.[m] ?? 100}
-                        onChange={e => {
-                          const v = parseInt(e.target.value, 10);
-                          setShare(m, isNaN(v) ? 0 : Math.max(0, Math.min(100, v)));
-                        }}
-                        className="w-14 px-1.5 py-1 text-sm text-center border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
-                      <span className="text-xs text-zinc-400">%</span>
-                      <button type="button"
-                        onClick={() => setShare(m, (form.shares?.[m] ?? 100) > 0 ? 0 : 100)}
-                        className={`text-[10px] px-1.5 py-0.5 rounded ${ (form.shares?.[m] ?? 100) > 0 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300' : 'bg-zinc-100 text-zinc-400 dark:bg-zinc-800' }`}>
-                        {(form.shares?.[m] ?? 100) > 0 ? '有' : '無'}
-                      </button>
-                    </div>
-                  ))}
+                <p className="text-[11px] text-zinc-400 mb-2">預設 100%。0% 表示未參與；可選 0／50／100 或手動輸入。</p>
+                <div className="space-y-2.5 max-h-52 overflow-y-auto">
+                  {memberList.map(m => {
+                    const pct = form.shares?.[m] ?? 100;
+                    const pillCls = (val) => `text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                      pct === val
+                        ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-white dark:text-zinc-900 dark:border-white'
+                        : 'bg-white dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 border-zinc-200 dark:border-zinc-700'
+                    }`;
+                    return (
+                      <div key={m} className="flex items-center gap-2">
+                        <span className="w-14 text-sm truncate shrink-0 font-medium">{m}</span>
+                        <div className="flex items-center gap-1.5 flex-1">
+                          <button type="button" onClick={() => setShare(m, 0)} className={pillCls(0)}>0%</button>
+                          <button type="button" onClick={() => setShare(m, 50)} className={pillCls(50)}>50%</button>
+                          <button type="button" onClick={() => setShare(m, 100)} className={pillCls(100)}>100%</button>
+                          <input type="number" min="0" max="100" step="1" inputMode="numeric"
+                            value={pct}
+                            onChange={e => {
+                              const v = parseInt(e.target.value, 10);
+                              setShare(m, isNaN(v) ? 0 : Math.max(0, Math.min(100, v)));
+                            }}
+                            className="w-14 px-1.5 py-1 text-sm text-center border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                          <span className="text-xs text-zinc-400">%</span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="flex gap-2 mt-2">
-                  <button type="button" onClick={() => setForm(f => ({ ...f, shares: defaultShares(memberList) }))}
-                    className="text-[11px] text-zinc-500 underline">全部 100%</button>
-                  <button type="button" onClick={() => {
-                    const o = {};
-                    memberList.forEach(m => { o[m] = 0; });
-                    setForm(f => ({ ...f, shares: o }));
-                  }} className="text-[11px] text-zinc-500 underline">全部 0%</button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">日期</label>
-                <input type="date" required value={form.date} onChange={e => setForm({...form, date: e.target.value})}
-                  className="w-full h-11 px-3 text-sm leading-none border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800 appearance-none" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">備註（選填）</label>
-                <input type="text" placeholder="例如：午餐、地鐵票…" value={form.note}
-                  onChange={e => setForm({...form, note: e.target.value})}
-                  className="w-full px-3 py-2 border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
               </div>
 
               {/* 收據上傳：相機或相簿，上傳前自動壓縮 */}
@@ -702,29 +696,22 @@
       const [local, setLocal] = useState({ ...settings });
       const [memberInput, setMemberInput] = useState('');
       const [localMembers, setLocalMembers] = useState(() => [...(members || [])]);
-      const memberInputRef = useRef(null);
+      const [showMoreRates, setShowMoreRates] = useState(false);
       const composingRef = useRef(false);
 
       const addMember = () => {
-        // 中文輸入法組字中勿打斷；優先讀 ref 以避開受控延遲
+        // 完全受控：只讀 memberInput；組字中不提交
         if (composingRef.current) return;
-        const raw = (memberInputRef.current?.value ?? memberInput) || '';
-        const n = raw.trim();
-        if (!n) {
-          memberInputRef.current?.focus();
-          return;
-        }
+        const n = (memberInput || '').trim();
+        if (!n) return;
         const exists = localMembers.some(m => m.toLowerCase() === n.toLowerCase());
         if (exists) {
           alert('成員「' + n + '」已在名單中');
           setMemberInput('');
-          if (memberInputRef.current) memberInputRef.current.value = '';
           return;
         }
         setLocalMembers(prev => [...prev, n]);
         setMemberInput('');
-        if (memberInputRef.current) memberInputRef.current.value = '';
-        setTimeout(() => memberInputRef.current?.focus(), 0);
       };
 
       return (
@@ -754,37 +741,59 @@
                 <p className="text-xs text-zinc-500 mt-1">與匯率一併同步給全家人</p>
               </div>
               <div>
-                <label className="block text-sm font-medium mb-2">匯率（1 單位外幣 = ? 本國貨幣）</label>
-                <p className="text-xs text-zinc-500 mb-2">儲存後會同步給全家人。可設為 1 或任意正數。</p>
-                <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {CURRENCIES.filter(c => c.key !== (local.homeCurrency || 'HKD')).map(c => {
-                    const rateVal = (local.rates || {})[c.key];
+                <label className="block text-sm font-medium mb-2">匯率（1 外幣 = ? 本國貨幣）</label>
+                <p className="text-xs text-zinc-500 mb-2">預設顯示旅遊貨幣匯率；其餘可展開設定。儲存後同步給全家人。</p>
+                {(() => {
+                  const travel = local.travelCurrency || 'JPY';
+                  const home = local.homeCurrency || 'HKD';
+                  const homeLabel = CURRENCIES.find(x => x.key === home)?.label || home;
+                  const setRate = (key, raw, isBlur) => {
+                    if (!isBlur && (raw === '' || raw === '.' || raw === '-')) {
+                      setLocal({ ...local, rates: { ...(local.rates || {}), [key]: raw } });
+                      return;
+                    }
+                    const v = parseFloat(raw);
+                    const final = isBlur
+                      ? ((raw === '' || isNaN(v) || v <= 0) ? 1 : v)
+                      : (isNaN(v) ? raw : v);
+                    setLocal({ ...local, rates: { ...(local.rates || {}), [key]: final } });
+                  };
+                  const rateRow = (key) => {
+                    const c = CURRENCIES.find(x => x.key === key);
+                    const rateVal = (local.rates || {})[key];
                     const display = rateVal === undefined || rateVal === null ? '' : rateVal;
                     return (
-                      <div key={c.key} className="flex items-center gap-2">
-                        <span className="w-16 text-sm text-zinc-500 shrink-0">{c.label}</span>
+                      <div key={key} className="flex items-center gap-2">
+                        <span className="text-sm text-zinc-600 dark:text-zinc-300 shrink-0 w-28">
+                          1 {c?.label || key} =
+                        </span>
                         <input type="number" step="any" min="0" inputMode="decimal"
                           value={display}
-                          onChange={e => {
-                            const raw = e.target.value;
-                            if (raw === '' || raw === '.' || raw === '-') {
-                              setLocal({ ...local, rates: { ...(local.rates || {}), [c.key]: raw } });
-                              return;
-                            }
-                            const v = parseFloat(raw);
-                            setLocal({ ...local, rates: { ...(local.rates || {}), [c.key]: isNaN(v) ? raw : v } });
-                          }}
-                          onBlur={e => {
-                            const raw = e.target.value;
-                            const v = parseFloat(raw);
-                            const final = (raw === '' || isNaN(v) || v <= 0) ? 1 : v;
-                            setLocal({ ...local, rates: { ...(local.rates || {}), [c.key]: final } });
-                          }}
+                          onChange={e => setRate(key, e.target.value, false)}
+                          onBlur={e => setRate(key, e.target.value, true)}
                           className="flex-1 px-2 py-1.5 text-sm border border-zinc-300 dark:border-zinc-700 rounded-lg bg-white dark:bg-zinc-800" />
+                        <span className="text-sm text-zinc-500 shrink-0">{homeLabel}</span>
                       </div>
                     );
-                  })}
-                </div>
+                  };
+                  const others = CURRENCIES.filter(c => c.key !== home && c.key !== travel);
+                  return (
+                    <div className="space-y-2">
+                      {travel === home ? (
+                        <p className="text-xs text-zinc-400 py-1">旅遊貨幣與本國貨幣相同，主匯率視為 1。</p>
+                      ) : rateRow(travel)}
+                      {others.length > 0 && (
+                        <>
+                          <button type="button" onClick={() => setShowMoreRates(v => !v)}
+                            className="text-xs text-zinc-500 underline py-1">
+                            {showMoreRates ? '收起其他匯率' : `展開其他匯率（${others.length}）`}
+                          </button>
+                          {showMoreRates && others.map(c => rateRow(c.key))}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <label className="block text-sm font-medium mb-2">成員</label>
@@ -801,7 +810,6 @@
                 </div>
                 <div className="flex gap-2">
                   <input
-                    ref={memberInputRef}
                     value={memberInput}
                     onChange={e => setMemberInput(e.target.value)}
                     onCompositionStart={() => { composingRef.current = true; }}
@@ -814,7 +822,9 @@
                     onKeyDown={e => {
                       if (e.key === 'Enter') {
                         e.preventDefault();
-                        if (!composingRef.current) addMember();
+                        // 組字確認鍵不要當成提交
+                        if (e.nativeEvent.isComposing || composingRef.current) return;
+                        addMember();
                       }
                     }}
                   />
@@ -878,6 +888,8 @@
     // ---------- Main App ----------
     function App() {
       const [theme, setTheme] = useLocalStorage('tl-theme', 'system');
+      // 結算／總額顯示幣別：'home' 本國 | 'travel' 旅遊
+      const [settleCurMode, setSettleCurMode] = useLocalStorage('tl-settle-cur', 'home');
       const [ledger, setLedger] = useLocalStorage('tl-ledger', null);
       const [members, setMembers] = useLocalStorage('tl-members', []);
       const [txs, setTxs] = useLocalStorage('tl-txs', []);
@@ -956,6 +968,39 @@
         const c = CURRENCIES.find(x => x.key === (ledger?.homeCurrency || 'HKD'));
         return c?.symbol || 'HK$';
       }, [ledger]);
+
+      const travelSymbol = useMemo(() => {
+        const c = CURRENCIES.find(x => x.key === (ledger?.travelCurrency || 'JPY'));
+        return c?.symbol || '¥';
+      }, [ledger]);
+
+      // 畫面顯示用：本國 or 旅遊貨幣
+      const displaySymbol = settleCurMode === 'travel' ? travelSymbol : homeSymbol;
+      const displayCurKey = settleCurMode === 'travel'
+        ? (ledger?.travelCurrency || 'JPY')
+        : (ledger?.homeCurrency || 'HKD');
+
+      // 旅遊≠本國且匯率缺失／為 1 → 可能未正確設定
+      const travelRateUnset = useMemo(() => {
+        const travelKey = ledger?.travelCurrency || 'JPY';
+        const homeKey = ledger?.homeCurrency || 'HKD';
+        if (travelKey === homeKey) return false;
+        const r = (ledger?.rates || {})[travelKey];
+        if (r === undefined || r === null || r === '') return true;
+        const n = parseFloat(r);
+        return isNaN(n) || n <= 0 || n === 1;
+      }, [ledger]);
+
+      /** 任意幣別金額 → 目前顯示幣別（rates[travel] = 1 旅遊 = ? 本國） */
+      const convertDisplay = useCallback((amount, fromCur) => {
+        const homeAmt = convert(amount, fromCur);
+        if (settleCurMode !== 'travel') return homeAmt;
+        const travelKey = ledger?.travelCurrency || 'JPY';
+        if (fromCur === travelKey) return amount;
+        const rate = parseFloat((ledger?.rates || {})[travelKey]);
+        const r = (!isNaN(rate) && rate > 0) ? rate : 1;
+        return homeAmt / r;
+      }, [convert, settleCurMode, ledger]);
 
       const mergeMembers = (a = [], b = []) => {
         const seen = new Set();
@@ -1184,19 +1229,26 @@
           })
           .subscribe((status) => {
             console.info('[Travel Ledger] realtime status:', status);
-            if (status === 'SUBSCRIBED') setStatusText('即時同步已連線');
-            else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            if (status === 'SUBSCRIBED') {
+              setStatusText('即時同步已連線');
+              // Realtime 正常時放慢輪詢備援
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = setInterval(() => safePull(true), 30000);
+            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
               setStatusText('即時同步未就緒，改用定時更新');
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = setInterval(() => safePull(true), 5000);
             }
           });
 
-        const pollId = setInterval(() => safePull(true), 5000);
+        // 預設 5 秒輪詢；Realtime 連上後改 30 秒
+        const pollRef = { current: setInterval(() => safePull(true), 5000) };
         const onVis = () => { if (!document.hidden) safePull(true); };
         document.addEventListener('visibilitychange', onVis);
 
         return () => {
           alive = false;
-          clearInterval(pollId);
+          if (pollRef.current) clearInterval(pollRef.current);
           document.removeEventListener('visibilitychange', onVis);
           sb.removeChannel(channel);
         };
@@ -1474,6 +1526,16 @@
         txs.reduce((s, t) => s + convert(t.amount, t.currency), 0)
       , [txs, convert]);
 
+      // 結算實際會計入的借款（雙方都是現有成員）
+      const effectiveLoans = useMemo(() => {
+        const set = new Set((members || []).map(m => String(m || '').trim()).filter(Boolean));
+        return (loans || []).filter(l =>
+          set.has(String(l.from_member || '').trim()) &&
+          set.has(String(l.to_member || '').trim())
+        );
+      }, [loans, members]);
+      const skippedLoanCount = Math.max(0, (loans || []).length - effectiveLoans.length);
+
       const byCategory = useMemo(() => {
         const m = {};
         txs.forEach(t => {
@@ -1701,7 +1763,24 @@
                   {pendingQueue.length > 0 && <span className="text-amber-600">· {pendingQueue.length} 筆待傳</span>}
                 </div>
               </div>
-              <div className="flex items-center gap-1 shrink-0">
+              <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex flex-col items-end gap-0.5">
+                  <div className="flex items-center rounded-full border border-zinc-200 dark:border-zinc-700 p-0.5 text-[11px]">
+                    <button type="button" onClick={() => setSettleCurMode('home')}
+                      className={`px-2 py-1 rounded-full transition-colors ${settleCurMode === 'home' ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500'}`}
+                      title="以本國貨幣顯示結算">
+                      {CURRENCIES.find(c => c.key === (ledger.homeCurrency || 'HKD'))?.label || '本國'}
+                    </button>
+                    <button type="button" onClick={() => setSettleCurMode('travel')}
+                      className={`px-2 py-1 rounded-full transition-colors ${settleCurMode === 'travel' ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900' : 'text-zinc-500'}`}
+                      title="以旅遊貨幣顯示結算">
+                      {CURRENCIES.find(c => c.key === (ledger.travelCurrency || 'JPY'))?.label || '旅遊'}
+                    </button>
+                  </div>
+                  {settleCurMode === 'travel' && travelRateUnset && (
+                    <span className="text-[9px] text-amber-600 dark:text-amber-400 leading-none">匯率未設定，數字可能不準</span>
+                  )}
+                </div>
                 <button onClick={() => pullFromCloud(ledger.code)} disabled={syncing}
                   className="p-2 text-zinc-500 hover:text-zinc-900 dark:hover:text-white" title="重新同步" aria-label="重新同步">
                   <Icons.Refresh />
@@ -1735,9 +1814,12 @@
             onTouchStart={onTouchStart}
             onTouchEnd={onTouchEnd}>
             <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 mb-4 shadow-sm">
-              <div className="text-xs text-zinc-500 mb-1">本趟總花費（已換算）</div>
-              <div className="text-2xl font-bold font-mono tracking-tight">{formatMoney(totalHome, homeSymbol)}</div>
-              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {members.length || Object.keys(byPayer).length} 人{loans.length > 0 ? ` · ${loans.length} 筆借款` : ''}</div>
+              <div className="text-xs text-zinc-500 mb-1">本趟總花費（{settleCurMode === 'travel' ? '旅遊貨幣' : '本國貨幣'}）</div>
+              <div className="text-2xl font-bold font-mono tracking-tight">{formatMoney(
+                settleCurMode === 'travel' ? convertDisplay(totalHome, ledger.homeCurrency || 'HKD') : totalHome,
+                displaySymbol
+              )}</div>
+              <div className="text-xs text-zinc-400 mt-1">共 {txs.length} 筆 · {members.length || Object.keys(byPayer).length} 人{effectiveLoans.length > 0 ? ` · ${effectiveLoans.length} 筆借款` : ''}{skippedLoanCount > 0 ? `（另 ${skippedLoanCount} 筆因非成員未計入）` : ''}</div>
             </div>
 
             {tab === 'list' && (
@@ -1800,8 +1882,8 @@
                           </div>
                           <div className="text-right shrink-0">
                             <div className="font-mono font-semibold text-sm whitespace-nowrap">−{formatMoney(tx.amount, cur?.symbol || '')}</div>
-                            {tx.currency !== ledger.homeCurrency && (
-                              <div className="text-[10px] text-zinc-400 whitespace-nowrap">≈ {formatMoney(convert(tx.amount, tx.currency), homeSymbol)}</div>
+                            {tx.currency !== displayCurKey && (
+                              <div className="text-[10px] text-zinc-400 whitespace-nowrap">≈ {formatMoney(convertDisplay(tx.amount, tx.currency), displaySymbol)}</div>
                             )}
                           </div>
                           <div className="flex flex-col shrink-0 opacity-60 group-hover:opacity-100">
@@ -1832,13 +1914,14 @@
                 <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4">
                   <h3 className="text-sm font-semibold mb-3">每人淨額</h3>
                   <p className="text-xs text-zinc-500 mb-3">
-                    共同支出總額 {formatMoney(settlement.total, homeSymbol)}
-                    {loans.length > 0 && ` · 含 ${loans.length} 筆私人借款`}
+                    共同支出總額 {formatMoney(settleCurMode === 'travel' ? convertDisplay(settlement.total, ledger.homeCurrency || 'HKD') : settlement.total, displaySymbol)}
+                    {effectiveLoans.length > 0 && ` · 含 ${effectiveLoans.length} 筆私人借款`}
+                    {skippedLoanCount > 0 && `（另 ${skippedLoanCount} 筆因非成員未計入）`}
                     （僅計算設定中的成員）
                   </p>
                   {settlement.orphanPaid > 0.01 && (
                     <p className="text-[11px] text-amber-600 dark:text-amber-400 mb-3">
-                      有已移除成員的付款約 {formatMoney(settlement.orphanPaid, homeSymbol)} 未計入其「已付」，費用仍由現有成員分攤。
+                      有已移除成員的付款約 {formatMoney(convertDisplay(settlement.orphanPaid, ledger.homeCurrency || 'HKD'), displaySymbol)} 未計入其「已付」，費用仍由現有成員分攤。
                     </p>
                   )}
                   <div className="space-y-2">
@@ -1847,11 +1930,11 @@
                         <span className="font-medium">{n.name}</span>
                         <div className="text-right">
                           <div className="font-mono text-xs text-zinc-500">
-                            已付 {formatMoney(n.paid, homeSymbol)} · 應分攤 {formatMoney(n.fair, homeSymbol)}
-                            {Math.abs(n.loanAdj) > 0.01 && ` · 借款 ${formatMoney(n.loanAdj, homeSymbol)}`}
+                            已付 {formatMoney(convertDisplay(n.paid, ledger.homeCurrency || 'HKD'), displaySymbol)} · 應分攤 {formatMoney(convertDisplay(n.fair, ledger.homeCurrency || 'HKD'), displaySymbol)}
+                            {Math.abs(n.loanAdj) > 0.01 && ` · 借款 ${formatMoney(convertDisplay(n.loanAdj, ledger.homeCurrency || 'HKD'), displaySymbol)}`}
                           </div>
                           <div className={`text-sm font-semibold ${n.net >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                            {n.net >= 0 ? '應收 ' : '應付 '}{formatMoney(Math.abs(n.net), homeSymbol)}
+                            {n.net >= 0 ? '應收 ' : '應付 '}{formatMoney(Math.abs(convertDisplay(n.net, ledger.homeCurrency || 'HKD')), displaySymbol)}
                           </div>
                         </div>
                       </div>
@@ -1870,7 +1953,7 @@
                           <span className="font-medium">{t.from}</span>
                           <span className="text-zinc-400">→</span>
                           <span className="font-medium">{t.to}</span>
-                          <span className="ml-auto font-mono font-semibold">{formatMoney(t.amount, homeSymbol)}</span>
+                          <span className="ml-auto font-mono font-semibold">{formatMoney(convertDisplay(t.amount, ledger.homeCurrency || 'HKD'), displaySymbol)}</span>
                         </div>
                       ))}
                     </div>
@@ -1921,7 +2004,7 @@
                                     else if (isLoan && !empty) color = v > 0 ? 'text-emerald-600' : 'text-red-500';
                                     return (
                                       <td key={p} className={`px-3 py-2 text-right font-mono border-b border-zinc-100 dark:border-zinc-800 whitespace-nowrap ${color}`}>
-                                        {empty ? '—' : (v > 0 && isNet ? '+' : '') + formatMoney(v, homeSymbol).replace(homeSymbol + ' ', '')}
+                                        {empty ? '—' : (v > 0 && isNet ? '+' : '') + formatMoney(convertDisplay(v, ledger.homeCurrency || 'HKD'), displaySymbol).replace(displaySymbol + ' ', '')}
                                       </td>
                                     );
                                   })}
@@ -1976,8 +2059,8 @@
                           </div>
                           <div className="text-right shrink-0">
                             <div className="font-mono font-semibold text-sm">{formatMoney(l.amount, cur?.symbol || '')}</div>
-                            {l.currency !== ledger.homeCurrency && (
-                              <div className="text-[10px] text-zinc-400">≈ {formatMoney(convert(l.amount, l.currency), homeSymbol)}</div>
+                            {l.currency !== displayCurKey && (
+                              <div className="text-[10px] text-zinc-400">≈ {formatMoney(convertDisplay(l.amount, l.currency), displaySymbol)}</div>
                             )}
                           </div>
                           <div className="flex flex-col shrink-0">
